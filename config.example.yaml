@@ -7,7 +7,7 @@
 google_api_key: ""
 
 # Gemini model identifier.
-model_name: gemini-2.5-pro
+model_name: gemini-3.1-pro-preview
 
 # Logging verbosity: debug, info, warn, error.
 log_level: info
