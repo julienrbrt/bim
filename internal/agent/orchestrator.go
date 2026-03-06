@@ -55,6 +55,8 @@ type PipelineResult struct {
 func (r *PipelineResult) String() string { return r.Summary }
 
 // RunFullPipeline executes discover → analyze → report in sequence.
+// Each contract is fully processed (analyze + report) before moving to the next
+// so that reports are written as soon as actionable findings are found.
 func (o *Orchestrator) RunFullPipeline(ctx context.Context) (*PipelineResult, error) {
 	start := time.Now()
 	o.logger.Info("starting full pipeline run")
@@ -74,25 +76,32 @@ func (o *Orchestrator) RunFullPipeline(ctx context.Context) (*PipelineResult, er
 		return result, ctx.Err()
 	}
 
-	o.logger.Info("pipeline phase 2: analysis")
-	analyses, err := o.analyzer.AnalyzePending(ctx)
+	o.logger.Info("pipeline phase 2: analyze and report")
+	pending, err := o.analyzer.PendingContracts(ctx)
 	if err != nil {
-		o.logger.Error("analysis phase failed", "error", err)
-	}
-	result.Analyses = analyses
-
-	if ctx.Err() != nil {
-		result.Duration = time.Since(start)
-		result.Summary = "Pipeline interrupted during analysis phase."
-		return result, ctx.Err()
+		o.logger.Error("failed to list pending contracts", "error", err)
 	}
 
-	o.logger.Info("pipeline phase 3: reporting")
-	reports, err := o.reporter.GenerateAllPending(ctx)
-	if err != nil {
-		o.logger.Error("reporting phase failed", "error", err)
+	for _, c := range pending {
+		if ctx.Err() != nil {
+			break
+		}
+
+		ar, err := o.analyzer.Analyze(ctx, c.ChainID, c.Address)
+		if err != nil {
+			o.logger.Error("analysis failed",
+				"chain_id", c.ChainID, "address", c.Address, "error", err,
+			)
+		}
+		result.Analyses = append(result.Analyses, ar)
+
+		if ar.Error != "" {
+			continue
+		}
+
+		reports := o.reportActionableFindings(ctx, ar)
+		result.Reports = append(result.Reports, reports...)
 	}
-	result.Reports = reports
 
 	result.Duration = time.Since(start)
 	result.Summary = o.buildPipelineSummary(result)
@@ -154,41 +163,16 @@ func (o *Orchestrator) ProcessContract(ctx context.Context, chainID uint64, addr
 		return result, err
 	}
 	result.Analyses = []*AnalyzeResult{analysisResult}
-
-	var reports []*ReportResult
-	for _, finding := range analysisResult.Findings {
-		if !finding.Severity.IsActionable() {
-			continue
-		}
-		if ctx.Err() != nil {
-			break
-		}
-
-		reportResult, err := o.reporter.GenerateForFinding(ctx, finding.ID)
-		if err != nil {
-			o.logger.Error("report generation failed for finding",
-				"finding_id", finding.ID, "error", err,
-			)
-			reports = append(reports, &ReportResult{
-				FindingID: finding.ID,
-				ChainID:   chainID,
-				Address:   address,
-				Error:     err.Error(),
-			})
-			continue
-		}
-		reports = append(reports, reportResult)
-	}
-	result.Reports = reports
+	result.Reports = o.reportActionableFindings(ctx, analysisResult)
 
 	result.Duration = time.Since(start)
-	result.Summary = o.buildSingleContractSummary(chainID, address, analysisResult, reports)
+	result.Summary = o.buildSingleContractSummary(chainID, address, analysisResult, result.Reports)
 
 	o.logger.Info("single contract processing complete",
 		"chain_id", chainID, "address", address,
 		"duration", result.Duration,
 		"findings", analysisResult.TotalFindings,
-		"reports", len(reports),
+		"reports", len(result.Reports),
 	)
 
 	return result, nil
@@ -418,6 +402,36 @@ func (o *Orchestrator) buildSingleContractSummary(
 	}
 
 	return b.String()
+}
+
+// reportActionableFindings generates reports for all Critical/High findings
+// in the given analysis result, returning results as they complete.
+func (o *Orchestrator) reportActionableFindings(ctx context.Context, ar *AnalyzeResult) []*ReportResult {
+	var reports []*ReportResult
+	for _, f := range ar.Findings {
+		if !f.Severity.IsActionable() {
+			continue
+		}
+		if ctx.Err() != nil {
+			break
+		}
+
+		rr, err := o.reporter.GenerateForFinding(ctx, f.ID)
+		if err != nil {
+			o.logger.Error("report generation failed",
+				"finding_id", f.ID, "error", err,
+			)
+			reports = append(reports, &ReportResult{
+				FindingID: f.ID,
+				ChainID:   ar.ChainID,
+				Address:   ar.Address,
+				Error:     err.Error(),
+			})
+			continue
+		}
+		reports = append(reports, rr)
+	}
+	return reports
 }
 
 func countNewContracts(dr *DiscoverResult) int {
