@@ -48,8 +48,10 @@ type ReportResult struct {
 	ChainID uint64 `json:"chainId"`
 	// Address is the contract address.
 	Address string `json:"address"`
-	// ReportPath is the filesystem path where the report was written.
+	// ReportPath is the filesystem path where the Markdown report was written.
 	ReportPath string `json:"reportPath"`
+	// HTMLReportPath is the filesystem path where the HTML report was written (empty if HTML rendering failed).
+	HTMLReportPath string `json:"htmlReportPath,omitempty"`
 	// Title is the finding title.
 	Title string `json:"title"`
 	// Severity is the finding severity.
@@ -127,7 +129,7 @@ func (t *ReporterTool) GenerateForFinding(ctx context.Context, findingID string)
 	}
 	result.MarkdownContent = markdown
 
-	reportPath, err := t.reporter.WriteReport(report)
+	paths, err := t.reporter.WriteReport(report)
 	if err != nil {
 		t.logger.Error("failed to write report to disk", "finding_id", findingID, "error", err)
 		result.Summary = fmt.Sprintf(
@@ -137,20 +139,26 @@ func (t *ReporterTool) GenerateForFinding(ctx context.Context, findingID string)
 		)
 		return result, nil
 	}
-	result.ReportPath = reportPath
+	result.ReportPath = paths.Markdown
+	result.HTMLReportPath = paths.HTML
 
 	storedReport := &store.StoredReport{
 		ID:         fmt.Sprintf("report-%s", findingID),
 		FindingID:  findingID,
 		ChainID:    storedFinding.ChainID,
 		Address:    storedFinding.Address,
-		ReportPath: reportPath,
+		ReportPath: paths.Markdown,
 	}
 	if err := t.store.SaveReport(ctx, storedReport); err != nil {
-		t.logger.Error("failed to persist report metadata", "finding_id", findingID, "report_path", reportPath, "error", err)
+		t.logger.Error("failed to persist report metadata", "finding_id", findingID, "report_path", paths.Markdown, "error", err)
 	}
 
 	t.tryMarkReported(ctx, storedFinding.ChainID, storedFinding.Address)
+
+	savedTo := paths.Markdown
+	if paths.HTML != "" {
+		savedTo += "\n  HTML: " + paths.HTML
+	}
 
 	result.Summary = fmt.Sprintf(
 		"Generated bug bounty report for [%s] \"%s\" on %s (chain %d).\n"+
@@ -160,13 +168,14 @@ func (t *ReporterTool) GenerateForFinding(ctx context.Context, findingID string)
 		storedFinding.Finding.Severity, storedFinding.Finding.Title,
 		t.cfg.ChainName(storedFinding.ChainID), storedFinding.ChainID,
 		storedFinding.Address,
-		reportPath,
+		savedTo,
 		result.HasPoC, result.HasFix,
 	)
 
 	t.logger.Info("report generated successfully",
 		"finding_id", findingID,
-		"report_path", reportPath,
+		"markdown_path", paths.Markdown,
+		"html_path", paths.HTML,
 		"has_poc", result.HasPoC,
 		"has_fix", result.HasFix,
 	)

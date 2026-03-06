@@ -98,6 +98,15 @@ func (a *Analyzer) Analyze(ctx context.Context, input AnalysisInput) (*AnalysisR
 		return result, err
 	}
 
+	// Prefix finding IDs with a short hash of the analysis ID to make them
+	// globally unique. Without this, generic IDs like "FINDING-001" collide
+	// across analyses, corrupting the findings table and preventing reports
+	// from being saved for subsequent contracts.
+	idPrefix := analysisID[:8]
+	for i := range findings {
+		findings[i].ID = idPrefix + "-" + findings[i].ID
+	}
+
 	result.Findings = findings
 	result.AnalyzedAt = time.Now().UTC()
 	result.Duration = time.Since(start)

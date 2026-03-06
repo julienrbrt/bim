@@ -104,6 +104,19 @@ func (o *Orchestrator) RunFullPipeline(ctx context.Context) (*PipelineResult, er
 		result.Reports = append(result.Reports, reports...)
 	}
 
+	// Sweep: generate reports for any previously unreported actionable findings
+	// (e.g. from interrupted earlier runs or manual analyze_contract calls).
+	if ctx.Err() == nil {
+		orphaned, err := o.reporter.GenerateAllPending(ctx)
+		if err != nil {
+			o.logger.Error("failed to generate reports for orphaned findings", "error", err)
+		}
+		if len(orphaned) > 0 {
+			o.logger.Info("generated reports for previously unreported findings", "count", len(orphaned))
+			result.Reports = append(result.Reports, orphaned...)
+		}
+	}
+
 	result.Duration = time.Since(start)
 	result.Summary = o.buildPipelineSummary(result)
 
@@ -353,7 +366,11 @@ func (o *Orchestrator) buildPipelineSummary(result *PipelineResult) string {
 			if rr.Error != "" {
 				fmt.Fprintf(&b, "- [%s] %s: **FAILED** — %s\n", rr.Severity, rr.Title, rr.Error)
 			} else {
-				fmt.Fprintf(&b, "- [%s] %s → `%s`\n", rr.Severity, rr.Title, rr.ReportPath)
+				fmt.Fprintf(&b, "- [%s] %s\n", rr.Severity, rr.Title)
+				fmt.Fprintf(&b, "  - Markdown: `%s`\n", rr.ReportPath)
+				if rr.HTMLReportPath != "" {
+					fmt.Fprintf(&b, "  - HTML: `%s`\n", rr.HTMLReportPath)
+				}
 			}
 		}
 		b.WriteString("\n")
@@ -413,7 +430,11 @@ func (o *Orchestrator) buildSingleContractSummary(
 			if rr.Error != "" {
 				fmt.Fprintf(&b, "- [%s] %s: **FAILED** — %s\n", rr.Severity, rr.Title, rr.Error)
 			} else {
-				fmt.Fprintf(&b, "- [%s] %s → `%s`\n", rr.Severity, rr.Title, rr.ReportPath)
+				fmt.Fprintf(&b, "- [%s] %s\n", rr.Severity, rr.Title)
+				fmt.Fprintf(&b, "  - Markdown: `%s`\n", rr.ReportPath)
+				if rr.HTMLReportPath != "" {
+					fmt.Fprintf(&b, "  - HTML: `%s`\n", rr.HTMLReportPath)
+				}
 			}
 		}
 	} else if analysis.CriticalCount+analysis.HighCount == 0 {

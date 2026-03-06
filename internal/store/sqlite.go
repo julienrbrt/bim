@@ -197,6 +197,7 @@ func (s *SQLiteStore) SaveFindings(ctx context.Context, findings []StoredFinding
 				Clauses(clause.OnConflict{
 					Columns: []clause.Column{{Name: "id"}},
 					DoUpdates: clause.AssignmentColumns([]string{
+						"chain_id", "address", "analysis_id",
 						"severity", "title", "description",
 						"affected_function", "affected_file", "line_numbers",
 						"impact", "recommendation", "confidence", "category",
@@ -368,6 +369,7 @@ func (s *SQLiteStore) SaveAnalysisResult(ctx context.Context, ar *analyzer.Analy
 					Clauses(clause.OnConflict{
 						Columns: []clause.Column{{Name: "id"}},
 						DoUpdates: clause.AssignmentColumns([]string{
+							"chain_id", "address", "analysis_id",
 							"severity", "title", "description",
 							"affected_function", "affected_file", "line_numbers",
 							"impact", "recommendation", "confidence", "category",
