@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
@@ -55,6 +56,7 @@ type agentDoneMsg struct{ err error }
 type agentToolCallMsg struct{ tool string }
 type agentToolResultMsg struct{ tool string }
 type agentStatusMsg struct{ text string }
+type clearCtrlCMsg struct{}
 
 const (
 	tabChat = iota
@@ -118,6 +120,9 @@ type Model struct {
 	agentBusy    bool
 	agentPartial string
 	agentStatus  string
+	agentCancel  context.CancelFunc // cancels the running agent request
+
+	ctrlCPending bool // true after first Ctrl+C when agent is busy
 
 	width  int
 	height int
@@ -194,10 +199,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recalcLayout()
 		return m, nil
 
+	case clearCtrlCMsg:
+		m.ctrlCPending = false
+		return m, nil
+
 	case tea.KeyPressMsg:
 		switch {
-		// Quit
+		// Ctrl+C: cancel agent on first press, quit on second (or when idle).
 		case msg.Code == 'c' && msg.Mod == tea.ModCtrl:
+			if m.agentBusy && !m.ctrlCPending {
+				// First Ctrl+C while agent is running — cancel the request.
+				if m.agentCancel != nil {
+					m.agentCancel()
+				}
+				m.ctrlCPending = true
+				m.chatLines = append(m.chatLines, dimStyle().Render("  ✖ Cancelling request… (press Ctrl+C again to quit)"))
+				m.syncChatViewport()
+				// Reset the pending flag after 2 seconds so a late
+				// second press doesn't accidentally quit.
+				return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+					return clearCtrlCMsg{}
+				})
+			}
+			// Second Ctrl+C (or first when agent is idle) — quit.
 			return m, tea.Quit
 
 		// Switch tabs
@@ -219,6 +243,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agentBusy = true
 			m.agentPartial = ""
 			m.agentStatus = "Starting…"
+			m.ctrlCPending = false
 			m.syncChatViewport()
 			return m, m.runAgent(text)
 		}
@@ -277,8 +302,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentDoneMsg:
 		m.agentBusy = false
 		m.agentStatus = ""
+		m.agentCancel = nil
+		m.ctrlCPending = false
 		if msg.err != nil {
-			m.chatLines = append(m.chatLines, "Error: "+msg.err.Error())
+			if msg.err == context.Canceled {
+				m.chatLines = append(m.chatLines, dimStyle().Render("  ✖ Request cancelled."))
+			} else {
+				m.chatLines = append(m.chatLines, "Error: "+msg.err.Error())
+			}
 		} else if m.agentPartial != "" {
 			m.chatLines = append(m.chatLines, "BiM: "+m.agentPartial)
 		}
@@ -392,12 +423,17 @@ func (m *Model) syncLogsViewport() {
 
 func (m *Model) runAgent(input string) tea.Cmd {
 	r := m.cfg.Runner
-	ctx := m.cfg.Ctx
+	parentCtx := m.cfg.Ctx
 	userID := m.cfg.UserID
 	sid := m.cfg.SessionID
 	ref := m.pref
 
+	ctx, cancel := context.WithCancel(parentCtx)
+	m.agentCancel = cancel
+
 	return func() tea.Msg {
+		defer cancel()
+
 		userMsg := genai.NewContentFromText(input, genai.RoleUser)
 
 		ref.Send(agentStatusMsg{text: "Sending to model…"})
