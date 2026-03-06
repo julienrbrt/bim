@@ -389,7 +389,11 @@ func (m *Model) syncChatViewport() {
 		styled[i] = styleChatLine(l)
 	}
 
-	m.chatVP.SetContent(strings.Join(styled, "\n"))
+	content := strings.Join(styled, "\n")
+	if m.width > 0 {
+		content = lipgloss.Wrap(content, m.width, "")
+	}
+	m.chatVP.SetContent(content)
 	m.chatVP.GotoBottom()
 }
 
@@ -398,7 +402,11 @@ func (m *Model) syncLogsViewport() {
 	for i, l := range m.logLines {
 		styled[i] = styleLogLine(l)
 	}
-	m.logsVP.SetContent(strings.Join(styled, "\n"))
+	content := strings.Join(styled, "\n")
+	if m.width > 0 {
+		content = lipgloss.Wrap(content, m.width, "")
+	}
+	m.logsVP.SetContent(content)
 	m.logsVP.GotoBottom()
 }
 
