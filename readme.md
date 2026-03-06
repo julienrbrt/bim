@@ -96,27 +96,22 @@ A background discovery loop polls Sourcify automatically at the configured inter
 ### Install and run
 
 ```sh
-git clone https://github.com/julien-robert-music/bim.git  # or your fork
-cd bim
-cp config.example.yaml config.yaml
+go install github.com/julienrbrt/bim@main
 ```
 
-Edit `config.yaml` and set your `google_api_key`, then:
+Copy the `config.example.yaml` and set your `google_api_key`, then:
 
 ```sh
-go run .
-```
-
-Or build and run:
-
-```sh
-go build -o bim .
-./bim
+bim -c ./config.yaml
 ```
 
 ## Configuration
 
-BiM is configured via a YAML file (default: `config.yaml`, override with `BIM_CONFIG` env var).
+BiM is configured via a YAML file. The config path is resolved with the following precedence:
+
+1. **`-c` / `--config` flag** — `bim -c ./my-config.yaml`
+2. **`BIM_CONFIG` environment variable** — `BIM_CONFIG=./my-config.yaml bim`
+3. **Default** — `config.yaml` in the current directory
 
 ```yaml
 # Required — Google Cloud API key.

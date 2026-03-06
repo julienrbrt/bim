@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -33,8 +34,13 @@ const (
 func main() {
 	ctx := context.Background()
 
-	configPath := envOr("BIM_CONFIG", "config.yaml")
-	cfg, err := config.Load(configPath)
+	var configFlag string
+	flag.StringVar(&configFlag, "c", "config.yaml", "path to config file")
+	flag.StringVar(&configFlag, "config", "config.yaml", "path to config file")
+	flag.Parse()
+
+	configPath := configFlag
+	cfg, err := config.Load(configFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config from %s: %v\n", configPath, err)
 		os.Exit(1)
@@ -360,13 +366,6 @@ func (a *genaiLLMAdapter) Generate(ctx context.Context, systemPrompt, userPrompt
 		return "", fmt.Errorf("gemini generate content: %w", err)
 	}
 	return resp.Text(), nil
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func parseLogLevel(s string) slog.Level {

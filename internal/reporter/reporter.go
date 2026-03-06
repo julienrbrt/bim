@@ -5,14 +5,16 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"text/template"
+	texttmpl "text/template"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/yuin/goldmark"
 
 	"github.com/julienrbrt/bim/internal/analyzer"
 )
@@ -123,26 +125,40 @@ func (r *Reporter) GeneratePoC(ctx context.Context, finding analyzer.Finding, ch
 	return response, nil
 }
 
-// WriteReport writes a formatted Markdown report to disk and returns the file path.
-// Reports are written to: {dataDir}/{chainID}/{address}/reports/{reportID}.md
+// WriteReport writes a formatted Markdown report and its HTML counterpart to disk.
+// Reports are written to: {dataDir}/{chainID}/{address}/reports/{reportID}.{md,html}
 func (r *Reporter) WriteReport(report *Report) (string, error) {
 	dir := filepath.Join(r.dataDir, fmt.Sprintf("%d", report.ChainID), report.Address, "reports")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("creating report directory %s: %w", dir, err)
 	}
 
-	path := filepath.Join(dir, uuid.New().String()+".md")
-	content, err := r.renderMarkdown(report)
+	id := uuid.New().String()
+
+	mdContent, err := r.renderMarkdown(report)
 	if err != nil {
 		return "", fmt.Errorf("rendering report markdown: %w", err)
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return "", fmt.Errorf("writing report to %s: %w", path, err)
+	mdPath := filepath.Join(dir, id+".md")
+	if err := os.WriteFile(mdPath, []byte(mdContent), 0o644); err != nil {
+		return "", fmt.Errorf("writing report to %s: %w", mdPath, err)
 	}
 
-	r.logger.Info("report written to disk", "path", path, "finding_id", report.Finding.ID)
-	return path, nil
+	htmlContent, err := r.renderHTML(report)
+	if err != nil {
+		r.logger.Warn("failed to render HTML report, skipping", "finding_id", report.Finding.ID, "error", err)
+	} else {
+		htmlPath := filepath.Join(dir, id+".html")
+		if err := os.WriteFile(htmlPath, []byte(htmlContent), 0o644); err != nil {
+			r.logger.Warn("failed to write HTML report", "path", htmlPath, "error", err)
+		} else {
+			r.logger.Info("HTML report written to disk", "path", htmlPath, "finding_id", report.Finding.ID)
+		}
+	}
+
+	r.logger.Info("report written to disk", "path", mdPath, "finding_id", report.Finding.ID)
+	return mdPath, nil
 }
 
 // FormatMarkdown renders a report to a Markdown string using the template.
@@ -208,7 +224,7 @@ func (r *Reporter) renderMarkdownWithOpts(report *Report, opts FormatOptions) (s
 		tmplText = removeSection(tmplText, "Recommended Fix")
 	}
 
-	renderTmpl, err := template.New("report-render").Parse(tmplText)
+	renderTmpl, err := texttmpl.New("report-render").Parse(tmplText)
 	if err != nil {
 		return "", fmt.Errorf("parsing report template: %w", err)
 	}
@@ -219,6 +235,41 @@ func (r *Reporter) renderMarkdownWithOpts(report *Report, opts FormatOptions) (s
 	}
 
 	return buf.String(), nil
+}
+
+// renderHTML converts the Markdown report to a styled HTML document.
+func (r *Reporter) renderHTML(report *Report) (string, error) {
+	md, err := r.renderMarkdown(report)
+	if err != nil {
+		return "", fmt.Errorf("rendering markdown for HTML conversion: %w", err)
+	}
+
+	var body bytes.Buffer
+	if err := goldmark.Convert([]byte(md), &body); err != nil {
+		return "", fmt.Errorf("converting markdown to HTML: %w", err)
+	}
+
+	htmlTmplText, err := templatesFS.ReadFile("templates/html.tmpl")
+	if err != nil {
+		return "", fmt.Errorf("reading html.tmpl: %w", err)
+	}
+
+	htmlTmpl, err := template.New("html").Parse(string(htmlTmplText))
+	if err != nil {
+		return "", fmt.Errorf("parsing html template: %w", err)
+	}
+
+	data := map[string]any{
+		"Title": report.Finding.Title,
+		"Body":  template.HTML(body.String()),
+	}
+
+	var out bytes.Buffer
+	if err := htmlTmpl.Execute(&out, data); err != nil {
+		return "", fmt.Errorf("executing html template: %w", err)
+	}
+
+	return out.String(), nil
 }
 
 func templateText() string {
