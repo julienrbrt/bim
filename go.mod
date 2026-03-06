@@ -10,7 +10,6 @@ require (
 	charm.land/lipgloss/v2 v2.0.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/google/uuid v1.6.0
-	github.com/yuin/goldmark v1.7.16
 	google.golang.org/adk v0.6.0
 	google.golang.org/genai v1.49.0
 	gopkg.in/yaml.v3 v3.0.1

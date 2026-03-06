@@ -367,10 +367,7 @@ func (o *Orchestrator) buildPipelineSummary(result *PipelineResult) string {
 				fmt.Fprintf(&b, "- [%s] %s: **FAILED** — %s\n", rr.Severity, rr.Title, rr.Error)
 			} else {
 				fmt.Fprintf(&b, "- [%s] %s\n", rr.Severity, rr.Title)
-				fmt.Fprintf(&b, "  - Markdown: `%s`\n", rr.ReportPath)
-				if rr.HTMLReportPath != "" {
-					fmt.Fprintf(&b, "  - HTML: `%s`\n", rr.HTMLReportPath)
-				}
+				fmt.Fprintf(&b, "  - Report: `%s`\n", rr.ReportPath)
 			}
 		}
 		b.WriteString("\n")
@@ -431,10 +428,7 @@ func (o *Orchestrator) buildSingleContractSummary(
 				fmt.Fprintf(&b, "- [%s] %s: **FAILED** — %s\n", rr.Severity, rr.Title, rr.Error)
 			} else {
 				fmt.Fprintf(&b, "- [%s] %s\n", rr.Severity, rr.Title)
-				fmt.Fprintf(&b, "  - Markdown: `%s`\n", rr.ReportPath)
-				if rr.HTMLReportPath != "" {
-					fmt.Fprintf(&b, "  - HTML: `%s`\n", rr.HTMLReportPath)
-				}
+				fmt.Fprintf(&b, "  - Report: `%s`\n", rr.ReportPath)
 			}
 		}
 	} else if analysis.CriticalCount+analysis.HighCount == 0 {
