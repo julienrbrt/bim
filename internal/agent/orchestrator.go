@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/julienrbrt/bim/internal/config"
+	"github.com/julienrbrt/bim/internal/store"
 )
 
 // Orchestrator coordinates the discovery, analysis, and reporting pipeline.
@@ -55,6 +56,8 @@ type PipelineResult struct {
 func (r *PipelineResult) String() string { return r.Summary }
 
 // RunFullPipeline executes discover → analyze → report in sequence.
+// Each contract is fully processed (analyze + report) before moving to the next
+// so that reports are written as soon as actionable findings are found.
 func (o *Orchestrator) RunFullPipeline(ctx context.Context) (*PipelineResult, error) {
 	start := time.Now()
 	o.logger.Info("starting full pipeline run")
@@ -74,25 +77,45 @@ func (o *Orchestrator) RunFullPipeline(ctx context.Context) (*PipelineResult, er
 		return result, ctx.Err()
 	}
 
-	o.logger.Info("pipeline phase 2: analysis")
-	analyses, err := o.analyzer.AnalyzePending(ctx)
+	o.logger.Info("pipeline phase 2: analyze and report")
+	pending, err := o.analyzer.PendingContracts(ctx)
 	if err != nil {
-		o.logger.Error("analysis phase failed", "error", err)
-	}
-	result.Analyses = analyses
-
-	if ctx.Err() != nil {
-		result.Duration = time.Since(start)
-		result.Summary = "Pipeline interrupted during analysis phase."
-		return result, ctx.Err()
+		o.logger.Error("failed to list pending contracts", "error", err)
 	}
 
-	o.logger.Info("pipeline phase 3: reporting")
-	reports, err := o.reporter.GenerateAllPending(ctx)
-	if err != nil {
-		o.logger.Error("reporting phase failed", "error", err)
+	for _, c := range pending {
+		if ctx.Err() != nil {
+			break
+		}
+
+		ar, err := o.analyzer.Analyze(ctx, c.ChainID, c.Address)
+		if err != nil {
+			o.logger.Error("analysis failed",
+				"chain_id", c.ChainID, "address", c.Address, "error", err,
+			)
+		}
+		result.Analyses = append(result.Analyses, ar)
+
+		if ar.Error != "" {
+			continue
+		}
+
+		reports := o.reportActionableFindings(ctx, ar)
+		result.Reports = append(result.Reports, reports...)
 	}
-	result.Reports = reports
+
+	// Sweep: generate reports for any previously unreported actionable findings
+	// (e.g. from interrupted earlier runs or manual analyze_contract calls).
+	if ctx.Err() == nil {
+		orphaned, err := o.reporter.GenerateAllPending(ctx)
+		if err != nil {
+			o.logger.Error("failed to generate reports for orphaned findings", "error", err)
+		}
+		if len(orphaned) > 0 {
+			o.logger.Info("generated reports for previously unreported findings", "count", len(orphaned))
+			result.Reports = append(result.Reports, orphaned...)
+		}
+	}
 
 	result.Duration = time.Since(start)
 	result.Summary = o.buildPipelineSummary(result)
@@ -154,41 +177,16 @@ func (o *Orchestrator) ProcessContract(ctx context.Context, chainID uint64, addr
 		return result, err
 	}
 	result.Analyses = []*AnalyzeResult{analysisResult}
-
-	var reports []*ReportResult
-	for _, finding := range analysisResult.Findings {
-		if !finding.Severity.IsActionable() {
-			continue
-		}
-		if ctx.Err() != nil {
-			break
-		}
-
-		reportResult, err := o.reporter.GenerateForFinding(ctx, finding.ID)
-		if err != nil {
-			o.logger.Error("report generation failed for finding",
-				"finding_id", finding.ID, "error", err,
-			)
-			reports = append(reports, &ReportResult{
-				FindingID: finding.ID,
-				ChainID:   chainID,
-				Address:   address,
-				Error:     err.Error(),
-			})
-			continue
-		}
-		reports = append(reports, reportResult)
-	}
-	result.Reports = reports
+	result.Reports = o.reportActionableFindings(ctx, analysisResult)
 
 	result.Duration = time.Since(start)
-	result.Summary = o.buildSingleContractSummary(chainID, address, analysisResult, reports)
+	result.Summary = o.buildSingleContractSummary(chainID, address, analysisResult, result.Reports)
 
 	o.logger.Info("single contract processing complete",
 		"chain_id", chainID, "address", address,
 		"duration", result.Duration,
 		"findings", analysisResult.TotalFindings,
-		"reports", len(reports),
+		"reports", len(result.Reports),
 	)
 
 	return result, nil
@@ -212,6 +210,18 @@ func (o *Orchestrator) GenerateReport(ctx context.Context, findingID string) (*R
 func (o *Orchestrator) DisplayReport(ctx context.Context, findingID string) (string, error) {
 	o.logger.Info("displaying report for finding", "finding_id", findingID)
 	return o.reporter.GetReportContent(ctx, findingID)
+}
+
+// ListContracts returns tracked contracts matching the given filter, letting
+// the agent see discovered contracts and their statuses (pending, analyzed, failed, etc.).
+func (o *Orchestrator) ListContracts(ctx context.Context, filter store.ContractFilter) ([]store.Contract, error) {
+	o.logger.Info("listing contracts", "status", filter.Status, "chain_id", filter.ChainID)
+	contracts, err := o.discovery.ListContracts(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("listing contracts: %w", err)
+	}
+	o.logger.Info("contracts listed", "count", len(contracts))
+	return contracts, nil
 }
 
 // GeneratePoC generates only the proof-of-concept code for a finding.
@@ -242,22 +252,26 @@ Use **discovery_status** to check what the background loop has found so far.
 1. **discover_contracts** — Trigger an immediate on-demand discovery cycle (in addition to background polling).
    Chains that were already polled within the current interval are skipped automatically.
 
-2. **analyze_contract** — Run an AI-powered security analysis on a verified contract.
+2. **list_contracts** — List tracked contracts and their statuses. Supports filtering by status
+   (pending, analyzing, analyzed, reported, skipped, failed) and chain ID. Use this to see which
+   contracts still need analysis, which ones failed, or to get a full inventory.
+
+3. **analyze_contract** — Run an AI-powered security analysis on a verified contract.
    Provide a chain ID and contract address. Returns findings ranked by severity.
 
-3. **generate_report** — Generate a bug bounty report with PoC exploit code for a specific finding.
+4. **generate_report** — Generate a bug bounty report with PoC exploit code for a specific finding.
    Provide a finding ID. Produces a Markdown report ready for submission.
 
-4. **display_report** — Display the full Markdown content of a previously generated report.
+5. **display_report** — Display the full Markdown content of a previously generated report.
    Provide a finding ID. Use this when the user wants to see, read, or review a report.
 
-5. **run_pipeline** — Run the full discover → analyze → report pipeline automatically.
+6. **run_pipeline** — Run the full discover → analyze → report pipeline automatically.
 
-6. **generate_poc** — Generate only the Foundry proof-of-concept exploit code for a finding.
+7. **generate_poc** — Generate only the Foundry proof-of-concept exploit code for a finding.
 
-7. **reanalyze_contract** — Force a re-analysis of a previously analyzed contract.
+8. **reanalyze_contract** — Force a re-analysis of a previously analyzed contract.
 
-8. **discovery_status** — Check the background discovery loop status: whether it is running,
+9. **discovery_status** — Check the background discovery loop status: whether it is running,
    poll interval, total cycles completed, cumulative new contracts found, last run time, and
    the latest discovery results. Use this to see what has been found automatically.
 
@@ -266,6 +280,8 @@ Use **discovery_status** to check what the background loop has found so far.
 When the user asks you to:
 - "Find new contracts" or "What's new?" → Use discovery_status first, then discover_contracts.
 - "Is the background loop running?" or "What has been found?" → Use discovery_status.
+- "Show me all contracts" or "What's pending?" → Use list_contracts (with status filter if appropriate).
+- "Which contracts failed?" → Use list_contracts with status "failed".
 - "Analyze 0x..." → Use analyze_contract.
 - "Generate a report for..." → Use generate_report.
 - "Show me the report" or "Display the report for..." → Use display_report.
@@ -276,9 +292,9 @@ When the user asks you to:
 
 For broad surveillance:
 1. Use discovery_status to see what the background loop has already found.
-2. Use discover_contracts to trigger an immediate cycle.
-3. Use analyze_contract on pending contracts.
-4. Use run_pipeline for automated end-to-end processing.
+2. Use list_contracts to see all tracked contracts and identify pending or failed ones.
+3. Use discover_contracts to trigger an immediate cycle if needed.
+4. Use analyze_contract on pending contracts, or run_pipeline for automated end-to-end processing.
 
 Always present results clearly:
 - List findings with their severity, title, and affected function.
@@ -350,7 +366,8 @@ func (o *Orchestrator) buildPipelineSummary(result *PipelineResult) string {
 			if rr.Error != "" {
 				fmt.Fprintf(&b, "- [%s] %s: **FAILED** — %s\n", rr.Severity, rr.Title, rr.Error)
 			} else {
-				fmt.Fprintf(&b, "- [%s] %s → `%s`\n", rr.Severity, rr.Title, rr.ReportPath)
+				fmt.Fprintf(&b, "- [%s] %s\n", rr.Severity, rr.Title)
+				fmt.Fprintf(&b, "  - Report: `%s`\n", rr.ReportPath)
 			}
 		}
 		b.WriteString("\n")
@@ -410,7 +427,8 @@ func (o *Orchestrator) buildSingleContractSummary(
 			if rr.Error != "" {
 				fmt.Fprintf(&b, "- [%s] %s: **FAILED** — %s\n", rr.Severity, rr.Title, rr.Error)
 			} else {
-				fmt.Fprintf(&b, "- [%s] %s → `%s`\n", rr.Severity, rr.Title, rr.ReportPath)
+				fmt.Fprintf(&b, "- [%s] %s\n", rr.Severity, rr.Title)
+				fmt.Fprintf(&b, "  - Report: `%s`\n", rr.ReportPath)
 			}
 		}
 	} else if analysis.CriticalCount+analysis.HighCount == 0 {
@@ -418,6 +436,36 @@ func (o *Orchestrator) buildSingleContractSummary(
 	}
 
 	return b.String()
+}
+
+// reportActionableFindings generates reports for all Critical/High findings
+// in the given analysis result, returning results as they complete.
+func (o *Orchestrator) reportActionableFindings(ctx context.Context, ar *AnalyzeResult) []*ReportResult {
+	var reports []*ReportResult
+	for _, f := range ar.Findings {
+		if !f.Severity.IsActionable() {
+			continue
+		}
+		if ctx.Err() != nil {
+			break
+		}
+
+		rr, err := o.reporter.GenerateForFinding(ctx, f.ID)
+		if err != nil {
+			o.logger.Error("report generation failed",
+				"finding_id", f.ID, "error", err,
+			)
+			reports = append(reports, &ReportResult{
+				FindingID: f.ID,
+				ChainID:   ar.ChainID,
+				Address:   ar.Address,
+				Error:     err.Error(),
+			})
+			continue
+		}
+		reports = append(reports, rr)
+	}
+	return reports
 }
 
 func countNewContracts(dr *DiscoverResult) int {

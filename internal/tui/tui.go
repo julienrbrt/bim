@@ -3,8 +3,10 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
@@ -17,10 +19,8 @@ import (
 	"google.golang.org/genai"
 )
 
-// progRef is a shared, mutable holder for the *tea.Program reference.
-// Because bubbletea copies the Model value when NewProgram is called,
-// we need a level of indirection so every copy (and the LogSink) can
-// reach the same *tea.Program once it is wired up.
+// progRef is a shared holder for the *tea.Program reference so that
+// every copy of Model (and the LogSink) can reach the same program.
 type progRef struct {
 	mu sync.Mutex
 	p  *tea.Program
@@ -50,37 +50,23 @@ func (r *progRef) Send(msg tea.Msg) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Message types internal to the TUI
-// ---------------------------------------------------------------------------
-
-// agentChunkMsg carries a piece of streaming text from the model.
+// TUI message types.
 type agentChunkMsg struct{ text string }
-
-// agentDoneMsg signals that the runner iteration has finished.
 type agentDoneMsg struct{ err error }
-
-// agentToolCallMsg is sent when the agent invokes a tool.
 type agentToolCallMsg struct{ tool string }
-
-// agentToolResultMsg is sent when a tool invocation returns.
 type agentToolResultMsg struct{ tool string }
-
-// agentStatusMsg is a free-form status line (shown in the tab bar and as a
-// transient line at the bottom of the chat viewport while the agent is busy).
 type agentStatusMsg struct{ text string }
+type clearCtrlCMsg struct{}
 
 const (
 	tabChat = iota
 	tabLogs
 )
 
-// ---------------------------------------------------------------------------
-// Pretty tool-name mapping
-// ---------------------------------------------------------------------------
-
+// Pretty tool-name mapping.
 var toolDisplayNames = map[string]string{
 	"discover_contracts": "Discovering contracts",
+	"list_contracts":     "Listing contracts",
 	"analyze_contract":   "Analyzing contract",
 	"generate_report":    "Generating report",
 	"display_report":     "Displaying report",
@@ -97,7 +83,20 @@ func prettyToolName(name string) string {
 	return name
 }
 
-// Config holds everything the TUI needs from the caller.
+// toolTriggersBell reports whether a completed tool invocation should ring the
+// terminal bell (i.e. a report was just written).
+func toolTriggersBell(name string) bool {
+	return name == "generate_report" || name == "run_pipeline"
+}
+
+// bell writes a BEL character to stderr so the terminal emits a notification
+// sound. Stderr is used because bubbletea owns stdout for rendering.
+func bell() tea.Msg {
+	_, _ = os.Stderr.Write([]byte("\a"))
+	return nil
+}
+
+// Config holds the TUI dependencies.
 type Config struct {
 	Runner    *runner.Runner
 	SessionID string
@@ -105,7 +104,7 @@ type Config struct {
 	Ctx       context.Context
 }
 
-// Model is the top-level Bubbletea model.
+// Model is the top-level Bubbletea model for BiM.
 type Model struct {
 	cfg Config
 
@@ -118,29 +117,23 @@ type Model struct {
 	chatLines []string
 	logLines  []string
 
-	// agentBusy is true while the agent goroutine is running.
-	agentBusy bool
-	// agentPartial accumulates streaming text chunks for the current reply.
+	agentBusy    bool
 	agentPartial string
-	// agentStatus is a human-readable description of what the agent is doing
-	// right now (e.g. "Calling analyze_contract…").  Shown in the tab bar
-	// and as a ghost line in the chat viewport.
-	agentStatus string
+	agentStatus  string
+	agentCancel  context.CancelFunc // cancels the running agent request
+
+	ctrlCPending bool // true after first Ctrl+C when agent is busy
 
 	width  int
 	height int
 
-	// pref is a shared pointer so every copy of Model (and the LogSink)
-	// can reach the same *tea.Program after it is wired up.
-	pref *progRef
-
-	// logSink is kept so Init() can flush lines queued before the program started.
+	pref    *progRef
 	logSink *LogSink
 
 	ready bool
 }
 
-// New creates the initial TUI model.
+// New creates the initial Model.
 func New(cfg Config) Model {
 	ti := textinput.New()
 	ti.Prompt = "> "
@@ -160,33 +153,29 @@ func New(cfg Config) Model {
 	}
 }
 
-// ProgRef returns the shared program-reference holder.
+// ProgRef returns the shared program reference.
 func (m *Model) ProgRef() *progRef {
 	return m.pref
 }
 
-// SetProgram is a convenience that stores the program in the shared ref.
+// SetProgram stores the program in the shared ref.
 func (m *Model) SetProgram(p *tea.Program) {
 	m.pref.Set(p)
 }
 
-// SetRunnerConfig fills in the Runner, SessionID and UserID that were not
-// available when the Model was first constructed.
+// SetRunnerConfig fills in Runner, SessionID and UserID after construction.
 func (m *Model) SetRunnerConfig(r *runner.Runner, sessionID, userID string) {
 	m.cfg.Runner = r
 	m.cfg.SessionID = sessionID
 	m.cfg.UserID = userID
 }
 
-// SetLogSink stores the LogSink so that Init() can flush lines that were
-// queued before the program started running.
+// SetLogSink stores the LogSink for flushing queued lines on Init.
 func (m *Model) SetLogSink(s *LogSink) {
 	m.logSink = s
 }
 
-// ---------------------------------------------------------------------------
-// tea.Model interface
-// ---------------------------------------------------------------------------
+// tea.Model interface.
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.input.Focus()}
@@ -210,10 +199,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recalcLayout()
 		return m, nil
 
+	case clearCtrlCMsg:
+		m.ctrlCPending = false
+		return m, nil
+
 	case tea.KeyPressMsg:
 		switch {
-		// Quit
+		// Ctrl+C: cancel agent on first press, quit on second (or when idle).
 		case msg.Code == 'c' && msg.Mod == tea.ModCtrl:
+			if m.agentBusy && !m.ctrlCPending {
+				// First Ctrl+C while agent is running — cancel the request.
+				if m.agentCancel != nil {
+					m.agentCancel()
+				}
+				m.ctrlCPending = true
+				m.chatLines = append(m.chatLines, dimStyle().Render("  ✖ Cancelling request… (press Ctrl+C again to quit)"))
+				m.syncChatViewport()
+				// Reset the pending flag after 2 seconds so a late
+				// second press doesn't accidentally quit.
+				return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+					return clearCtrlCMsg{}
+				})
+			}
+			// Second Ctrl+C (or first when agent is idle) — quit.
 			return m, tea.Quit
 
 		// Switch tabs
@@ -235,12 +243,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agentBusy = true
 			m.agentPartial = ""
 			m.agentStatus = "Starting…"
+			m.ctrlCPending = false
 			m.syncChatViewport()
 			return m, m.runAgent(text)
 		}
 
-		// When on the chat tab, let textinput handle typing; otherwise
-		// forward to the active viewport for scrolling.
+		// Chat tab: textinput handles typing; otherwise forward to viewport.
 		if m.activeTab == tabChat {
 			switch msg.Code {
 			case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown:
@@ -260,8 +268,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, tea.Batch(cmds...)
 
-	// --- custom messages ---------------------------------------------------
-
 	case logLineMsg:
 		m.logLines = append(m.logLines, msg.line)
 		m.syncLogsViewport()
@@ -275,8 +281,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentToolCallMsg:
 		m.agentStatus = prettyToolName(msg.tool) + "…"
-		// Append a visible status line so the user can see the sequence of
-		// tool invocations even after they scroll past.
 		m.chatLines = append(m.chatLines, fmt.Sprintf("  ⚙ Calling %s", prettyToolName(msg.tool)))
 		m.syncChatViewport()
 		return m, nil
@@ -285,6 +289,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agentStatus = prettyToolName(msg.tool) + " done, processing…"
 		m.chatLines = append(m.chatLines, fmt.Sprintf("  ✔ %s complete", prettyToolName(msg.tool)))
 		m.syncChatViewport()
+		if toolTriggersBell(msg.tool) {
+			return m, bell
+		}
 		return m, nil
 
 	case agentStatusMsg:
@@ -295,8 +302,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentDoneMsg:
 		m.agentBusy = false
 		m.agentStatus = ""
+		m.agentCancel = nil
+		m.ctrlCPending = false
 		if msg.err != nil {
-			m.chatLines = append(m.chatLines, "Error: "+msg.err.Error())
+			if msg.err == context.Canceled {
+				m.chatLines = append(m.chatLines, dimStyle().Render("  ✖ Request cancelled."))
+			} else {
+				m.chatLines = append(m.chatLines, "Error: "+msg.err.Error())
+			}
 		} else if m.agentPartial != "" {
 			m.chatLines = append(m.chatLines, "BiM: "+m.agentPartial)
 		}
@@ -305,7 +318,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Forward other messages (mouse, etc.) to sub-components.
+	// Forward remaining messages (mouse, etc.) to sub-components.
 	if m.activeTab == tabChat {
 		vp, cmd := m.chatVP.Update(msg)
 		m.chatVP = vp
@@ -352,13 +365,10 @@ func (m Model) View() tea.View {
 	return view
 }
 
-// ---------------------------------------------------------------------------
-// Layout helpers
-// ---------------------------------------------------------------------------
+// Layout helpers.
 
 func (m *Model) recalcLayout() {
-	// Tab bar = 1 line, input = 1 line, so viewport gets the rest.
-	vpHeight := m.height - 2
+	vpHeight := m.height - 2 // tab bar + input
 	if vpHeight < 1 {
 		vpHeight = 1
 	}
@@ -377,7 +387,6 @@ func (m *Model) syncChatViewport() {
 	lines := make([]string, len(m.chatLines))
 	copy(lines, m.chatLines)
 
-	// Show the in-progress partial reply or a status indicator.
 	if m.agentPartial != "" {
 		lines = append(lines, "BiM: "+m.agentPartial+"▍")
 	} else if m.agentBusy && m.agentStatus != "" {
@@ -410,19 +419,21 @@ func (m *Model) syncLogsViewport() {
 	m.logsVP.GotoBottom()
 }
 
-// ---------------------------------------------------------------------------
-// ADK runner
-// ---------------------------------------------------------------------------
+// ADK runner.
 
 func (m *Model) runAgent(input string) tea.Cmd {
-	// Capture values for the goroutine — no pointer receiver access after this.
 	r := m.cfg.Runner
-	ctx := m.cfg.Ctx
+	parentCtx := m.cfg.Ctx
 	userID := m.cfg.UserID
 	sid := m.cfg.SessionID
 	ref := m.pref
 
+	ctx, cancel := context.WithCancel(parentCtx)
+	m.agentCancel = cancel
+
 	return func() tea.Msg {
+		defer cancel()
+
 		userMsg := genai.NewContentFromText(input, genai.RoleUser)
 
 		ref.Send(agentStatusMsg{text: "Sending to model…"})
@@ -436,32 +447,16 @@ func (m *Model) runAgent(input string) tea.Cmd {
 			}
 
 			for _, p := range event.Content.Parts {
-				// ── Tool call: the model is asking to run a function ──
 				if p.FunctionCall != nil {
 					ref.Send(agentToolCallMsg{tool: p.FunctionCall.Name})
 					continue
 				}
-
-				// ── Tool result: a function has returned ──
 				if p.FunctionResponse != nil {
 					ref.Send(agentToolResultMsg{tool: p.FunctionResponse.Name})
 					continue
 				}
-
-				// ── Streaming text ──
 				if p.Text != "" {
-					if event.Partial {
-						// Partial streaming chunk — append to in-progress text.
-						ref.Send(agentChunkMsg{text: p.Text})
-					} else if event.IsFinalResponse() {
-						// Final, complete text event — send as a chunk so it
-						// gets rendered, then the agentDoneMsg finalises it.
-						ref.Send(agentChunkMsg{text: p.Text})
-					} else {
-						// Intermediate non-partial text (e.g. agent
-						// deliberation). Still show it as streaming.
-						ref.Send(agentChunkMsg{text: p.Text})
-					}
+					ref.Send(agentChunkMsg{text: p.Text})
 				}
 			}
 		}
@@ -470,9 +465,7 @@ func (m *Model) runAgent(input string) tea.Cmd {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Tab bar
-// ---------------------------------------------------------------------------
+// Tab bar.
 
 func (m Model) renderTabBar() string {
 	chatLabel := " Chat "
@@ -496,9 +489,7 @@ func (m Model) renderTabBar() string {
 	return lipgloss.NewStyle().Width(m.width).Render(bar)
 }
 
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
+// Styles.
 
 func activeTabStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
@@ -561,14 +552,8 @@ func styleLogLine(line string) string {
 	return s.Render(line)
 }
 
-// ---------------------------------------------------------------------------
-// Session helper
-// ---------------------------------------------------------------------------
-
-// EnsureSession creates an in-memory session if one doesn't exist, and returns
-// the session ID. This mirrors what the launcher does internally.
+// EnsureSession creates an in-memory session if one doesn't exist and returns its ID.
 func EnsureSession(ctx context.Context, svc session.Service, appName, userID, sessionID string) (string, error) {
-	// Try to get existing session first.
 	_, err := svc.Get(ctx, &session.GetRequest{
 		AppName:   appName,
 		UserID:    userID,
@@ -578,7 +563,6 @@ func EnsureSession(ctx context.Context, svc session.Service, appName, userID, se
 		return sessionID, nil
 	}
 
-	// Create a new session.
 	resp, err := svc.Create(ctx, &session.CreateRequest{
 		AppName:   appName,
 		UserID:    userID,

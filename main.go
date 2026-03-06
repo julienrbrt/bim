@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/model/gemini"
@@ -33,8 +35,13 @@ const (
 func main() {
 	ctx := context.Background()
 
-	configPath := envOr("BIM_CONFIG", "config.yaml")
-	cfg, err := config.Load(configPath)
+	var configFlag string
+	flag.StringVar(&configFlag, "c", "config.yaml", "path to config file")
+	flag.StringVar(&configFlag, "config", "config.yaml", "path to config file")
+	flag.Parse()
+
+	configPath := configFlag
+	cfg, err := config.Load(configFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config from %s: %v\n", configPath, err)
 		os.Exit(1)
@@ -316,6 +323,48 @@ func buildTools(orch *agentpkg.Orchestrator, discovery *agentpkg.DiscoveryTool, 
 		return nil, err
 	}
 
+	type listContractsInput struct {
+		Status  string `json:"status" jsonschema:"Optional contract status filter: pending, analyzing, analyzed, reported, skipped, failed. Leave empty to list all."`
+		ChainID uint64 `json:"chainId" jsonschema:"Optional chain ID filter. Use 0 or omit to list all chains."`
+	}
+
+	listContractsFn, err := functiontool.New(
+		functiontool.Config{
+			Name:        "list_contracts",
+			Description: "List tracked contracts and their statuses. Use this to see which contracts are pending analysis, which have been analyzed, which failed, etc. Supports filtering by status and chain ID.",
+		},
+		func(ctx tool.Context, input listContractsInput) (map[string]any, error) {
+			filter := store.ContractFilter{
+				Status:  store.ContractStatus(input.Status),
+				ChainID: input.ChainID,
+			}
+			contracts, err := orch.ListContracts(ctx, filter)
+			if err != nil {
+				return nil, err
+			}
+			if len(contracts) == 0 {
+				return map[string]any{"result": "No contracts found matching the filter."}, nil
+			}
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "Found %d contracts:\n\n", len(contracts))
+			for _, c := range contracts {
+				fmt.Fprintf(&sb, "- `%s` on chain %d — **%s**", c.Address, c.ChainID, c.Status)
+				if c.Name != "" {
+					fmt.Fprintf(&sb, " (%s)", c.Name)
+				}
+				if c.ErrorMessage != "" {
+					fmt.Fprintf(&sb, " [error: %s]", c.ErrorMessage)
+				}
+				sb.WriteString("\n")
+			}
+			return map[string]any{"result": sb.String()}, nil
+		},
+	)
+	if err != nil {
+		logger.Error("failed to create list_contracts tool", "error", err)
+		return nil, err
+	}
+
 	discoveryStatusFn, err := functiontool.New(
 		functiontool.Config{
 			Name:        "discovery_status",
@@ -342,7 +391,7 @@ func buildTools(orch *agentpkg.Orchestrator, discovery *agentpkg.DiscoveryTool, 
 		return nil, err
 	}
 
-	return []tool.Tool{discoverFn, analyzeFn, reportFn, displayReportFn, pipelineFn, pocFn, reanalyzeFn, discoveryStatusFn}, nil
+	return []tool.Tool{discoverFn, analyzeFn, reportFn, displayReportFn, pipelineFn, pocFn, reanalyzeFn, listContractsFn, discoveryStatusFn}, nil
 }
 
 type genaiLLMAdapter struct {
@@ -360,13 +409,6 @@ func (a *genaiLLMAdapter) Generate(ctx context.Context, systemPrompt, userPrompt
 		return "", fmt.Errorf("gemini generate content: %w", err)
 	}
 	return resp.Text(), nil
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func parseLogLevel(s string) slog.Level {

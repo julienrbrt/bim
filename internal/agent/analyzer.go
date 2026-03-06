@@ -174,11 +174,16 @@ func (t *AnalyzerTool) Analyze(ctx context.Context, chainID uint64, address stri
 	return result, nil
 }
 
-// AnalyzePending fetches all contracts with status "pending" and runs analysis on each.
-func (t *AnalyzerTool) AnalyzePending(ctx context.Context) ([]*AnalyzeResult, error) {
-	contracts, err := t.store.ListContracts(ctx, store.ContractFilter{
+// PendingContracts returns the list of contracts with status "pending".
+func (t *AnalyzerTool) PendingContracts(ctx context.Context) ([]store.Contract, error) {
+	return t.store.ListContracts(ctx, store.ContractFilter{
 		Status: store.StatusPending,
 	})
+}
+
+// AnalyzePending fetches all contracts with status "pending" and runs analysis on each.
+func (t *AnalyzerTool) AnalyzePending(ctx context.Context) ([]*AnalyzeResult, error) {
+	contracts, err := t.PendingContracts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing pending contracts: %w", err)
 	}

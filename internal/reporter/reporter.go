@@ -123,7 +123,7 @@ func (r *Reporter) GeneratePoC(ctx context.Context, finding analyzer.Finding, ch
 	return response, nil
 }
 
-// WriteReport writes a formatted Markdown report to disk and returns the file path.
+// WriteReport writes a formatted Markdown report to disk.
 // Reports are written to: {dataDir}/{chainID}/{address}/reports/{reportID}.md
 func (r *Reporter) WriteReport(report *Report) (string, error) {
 	dir := filepath.Join(r.dataDir, fmt.Sprintf("%d", report.ChainID), report.Address, "reports")
@@ -131,18 +131,20 @@ func (r *Reporter) WriteReport(report *Report) (string, error) {
 		return "", fmt.Errorf("creating report directory %s: %w", dir, err)
 	}
 
-	path := filepath.Join(dir, uuid.New().String()+".md")
-	content, err := r.renderMarkdown(report)
+	id := uuid.New().String()
+
+	mdContent, err := r.renderMarkdown(report)
 	if err != nil {
 		return "", fmt.Errorf("rendering report markdown: %w", err)
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return "", fmt.Errorf("writing report to %s: %w", path, err)
+	mdPath := filepath.Join(dir, id+".md")
+	if err := os.WriteFile(mdPath, []byte(mdContent), 0o644); err != nil {
+		return "", fmt.Errorf("writing report to %s: %w", mdPath, err)
 	}
 
-	r.logger.Info("report written to disk", "path", path, "finding_id", report.Finding.ID)
-	return path, nil
+	r.logger.Info("report written to disk", "path", mdPath, "finding_id", report.Finding.ID)
+	return mdPath, nil
 }
 
 // FormatMarkdown renders a report to a Markdown string using the template.
