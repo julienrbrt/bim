@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -77,6 +78,19 @@ func prettyToolName(name string) string {
 		return pretty
 	}
 	return name
+}
+
+// toolTriggersBell reports whether a completed tool invocation should ring the
+// terminal bell (i.e. a report was just written).
+func toolTriggersBell(name string) bool {
+	return name == "generate_report" || name == "run_pipeline"
+}
+
+// bell writes a BEL character to stderr so the terminal emits a notification
+// sound. Stderr is used because bubbletea owns stdout for rendering.
+func bell() tea.Msg {
+	_, _ = os.Stderr.Write([]byte("\a"))
+	return nil
 }
 
 // Config holds the TUI dependencies.
@@ -249,6 +263,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agentStatus = prettyToolName(msg.tool) + " done, processing…"
 		m.chatLines = append(m.chatLines, fmt.Sprintf("  ✔ %s complete", prettyToolName(msg.tool)))
 		m.syncChatViewport()
+		if toolTriggersBell(msg.tool) {
+			return m, bell
+		}
 		return m, nil
 
 	case agentStatusMsg:
