@@ -64,6 +64,7 @@ const (
 // Pretty tool-name mapping.
 var toolDisplayNames = map[string]string{
 	"discover_contracts": "Discovering contracts",
+	"list_contracts":     "Listing contracts",
 	"analyze_contract":   "Analyzing contract",
 	"generate_report":    "Generating report",
 	"display_report":     "Displaying report",

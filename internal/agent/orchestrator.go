@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/julienrbrt/bim/internal/config"
+	"github.com/julienrbrt/bim/internal/store"
 )
 
 // Orchestrator coordinates the discovery, analysis, and reporting pipeline.
@@ -198,6 +199,18 @@ func (o *Orchestrator) DisplayReport(ctx context.Context, findingID string) (str
 	return o.reporter.GetReportContent(ctx, findingID)
 }
 
+// ListContracts returns tracked contracts matching the given filter, letting
+// the agent see discovered contracts and their statuses (pending, analyzed, failed, etc.).
+func (o *Orchestrator) ListContracts(ctx context.Context, filter store.ContractFilter) ([]store.Contract, error) {
+	o.logger.Info("listing contracts", "status", filter.Status, "chain_id", filter.ChainID)
+	contracts, err := o.discovery.ListContracts(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("listing contracts: %w", err)
+	}
+	o.logger.Info("contracts listed", "count", len(contracts))
+	return contracts, nil
+}
+
 // GeneratePoC generates only the proof-of-concept code for a finding.
 func (o *Orchestrator) GeneratePoC(ctx context.Context, findingID string) (string, error) {
 	o.logger.Info("generating PoC for finding", "finding_id", findingID)
@@ -226,22 +239,26 @@ Use **discovery_status** to check what the background loop has found so far.
 1. **discover_contracts** — Trigger an immediate on-demand discovery cycle (in addition to background polling).
    Chains that were already polled within the current interval are skipped automatically.
 
-2. **analyze_contract** — Run an AI-powered security analysis on a verified contract.
+2. **list_contracts** — List tracked contracts and their statuses. Supports filtering by status
+   (pending, analyzing, analyzed, reported, skipped, failed) and chain ID. Use this to see which
+   contracts still need analysis, which ones failed, or to get a full inventory.
+
+3. **analyze_contract** — Run an AI-powered security analysis on a verified contract.
    Provide a chain ID and contract address. Returns findings ranked by severity.
 
-3. **generate_report** — Generate a bug bounty report with PoC exploit code for a specific finding.
+4. **generate_report** — Generate a bug bounty report with PoC exploit code for a specific finding.
    Provide a finding ID. Produces a Markdown report ready for submission.
 
-4. **display_report** — Display the full Markdown content of a previously generated report.
+5. **display_report** — Display the full Markdown content of a previously generated report.
    Provide a finding ID. Use this when the user wants to see, read, or review a report.
 
-5. **run_pipeline** — Run the full discover → analyze → report pipeline automatically.
+6. **run_pipeline** — Run the full discover → analyze → report pipeline automatically.
 
-6. **generate_poc** — Generate only the Foundry proof-of-concept exploit code for a finding.
+7. **generate_poc** — Generate only the Foundry proof-of-concept exploit code for a finding.
 
-7. **reanalyze_contract** — Force a re-analysis of a previously analyzed contract.
+8. **reanalyze_contract** — Force a re-analysis of a previously analyzed contract.
 
-8. **discovery_status** — Check the background discovery loop status: whether it is running,
+9. **discovery_status** — Check the background discovery loop status: whether it is running,
    poll interval, total cycles completed, cumulative new contracts found, last run time, and
    the latest discovery results. Use this to see what has been found automatically.
 
@@ -250,6 +267,8 @@ Use **discovery_status** to check what the background loop has found so far.
 When the user asks you to:
 - "Find new contracts" or "What's new?" → Use discovery_status first, then discover_contracts.
 - "Is the background loop running?" or "What has been found?" → Use discovery_status.
+- "Show me all contracts" or "What's pending?" → Use list_contracts (with status filter if appropriate).
+- "Which contracts failed?" → Use list_contracts with status "failed".
 - "Analyze 0x..." → Use analyze_contract.
 - "Generate a report for..." → Use generate_report.
 - "Show me the report" or "Display the report for..." → Use display_report.
@@ -260,9 +279,9 @@ When the user asks you to:
 
 For broad surveillance:
 1. Use discovery_status to see what the background loop has already found.
-2. Use discover_contracts to trigger an immediate cycle.
-3. Use analyze_contract on pending contracts.
-4. Use run_pipeline for automated end-to-end processing.
+2. Use list_contracts to see all tracked contracts and identify pending or failed ones.
+3. Use discover_contracts to trigger an immediate cycle if needed.
+4. Use analyze_contract on pending contracts, or run_pipeline for automated end-to-end processing.
 
 Always present results clearly:
 - List findings with their severity, title, and affected function.

@@ -486,6 +486,13 @@ func normalizeAddress(addr string) string {
 	return strings.ToLower(strings.TrimSpace(addr))
 }
 
+// ListContracts returns tracked contracts matching the given filter.
+// This exposes the store's contract listing so the agent can see all
+// discovered contracts and their statuses (pending, analyzed, failed, etc.).
+func (d *DiscoveryTool) ListContracts(ctx context.Context, filter store.ContractFilter) ([]store.Contract, error) {
+	return d.store.ListContracts(ctx, filter)
+}
+
 func contractLanguage(c *sourcify.ContractResponse) string {
 	if c.Compilation != nil {
 		return c.Compilation.Language

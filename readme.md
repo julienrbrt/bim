@@ -77,6 +77,7 @@ These are the tools the LLM agent has access to. You can ask for them by name or
 | Tool                 | Description                                                       |
 | -------------------- | ----------------------------------------------------------------- |
 | `discover_contracts` | Trigger an immediate discovery cycle across configured chains     |
+| `list_contracts`     | List tracked contracts filtered by status and/or chain ID         |
 | `analyze_contract`   | Run security analysis on a specific contract (chain ID + address) |
 | `generate_report`    | Generate a bug bounty report for a finding                        |
 | `run_pipeline`       | Run the full discover → analyze → report pipeline                 |
