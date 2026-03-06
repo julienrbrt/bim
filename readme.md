@@ -1,5 +1,8 @@
 # BiM
 
+> [!WARNING]
+> This project is ~80% AI-generated. The code, documentation, and analysis skills were largely produced by LLMs with human guidance and review. Use at your own risk — always verify findings manually before acting on them.
+
 BiM is an AI-powered smart contract security agent for EVM blockchain. It continuously discovers newly verified contracts via [Sourcify](https://docs.sourcify.dev/docs/intro), runs deep security analysis on their source code using a choosen model, and produces bug bounty reports complete with Foundry proof-of-concept exploits — all from a terminal UI you can chat with.
 
 Built with the [Google ADK for Go](https://google.github.io/adk-docs/get-started/go/) and wrapped in a [Bubbletea v2](https://charm.land/bubbletea) TUI.
