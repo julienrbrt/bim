@@ -18,9 +18,10 @@ const (
 	SeverityInfo Severity = "Informational"
 )
 
-// IsActionable reports whether the severity warrants a bug bounty report (Critical or High).
+// IsActionable reports whether the severity warrants a bug bounty report (Critical only —
+// extremely critical vulnerabilities where a third-party attacker can steal funds).
 func (s Severity) IsActionable() bool {
-	return s == SeverityCritical || s == SeverityHigh
+	return s == SeverityCritical
 }
 
 // Valid reports whether the severity is a recognized value.
@@ -134,7 +135,8 @@ type AnalysisResult struct {
 	Error string `json:"error,omitempty"`
 }
 
-// CriticalAndHighFindings returns only the findings with Critical or High severity.
+// CriticalAndHighFindings returns only the findings with Critical severity —
+// extremely critical vulnerabilities where a third-party attacker can steal funds.
 func (r *AnalysisResult) CriticalAndHighFindings() []Finding {
 	var actionable []Finding
 	for _, f := range r.Findings {
@@ -145,7 +147,7 @@ func (r *AnalysisResult) CriticalAndHighFindings() []Finding {
 	return actionable
 }
 
-// HasActionableFindings reports whether the analysis found any Critical or High findings.
+// HasActionableFindings reports whether the analysis found any Critical fund-theft findings.
 func (r *AnalysisResult) HasActionableFindings() bool {
 	for _, f := range r.Findings {
 		if f.Severity.IsActionable() {

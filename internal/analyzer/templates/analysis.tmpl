@@ -8,39 +8,39 @@ Contract: {{.ContractName}}
 
 ## Instructions
 
-Perform a comprehensive security analysis following these steps:
+Your ONLY goal is to find vulnerabilities that allow a **third-party attacker** (not the owner, not an admin) to **steal or permanently lock funds** held by the contract or its users.
 
-1. **Contract Classification**: Identify the contract type (ERC-20, ERC-721, DEX, Lending, Staking, Bridge, Vault, Governance, Proxy, Other) and summarize its purpose.
+Perform the following analysis steps:
 
-2. **Trust Boundary Analysis**: Enumerate all public and external functions. For each, identify:
-   - Who can call it (any user, owner, specific role)
-   - What state it modifies
-   - What external calls it makes
+1. **Asset Inventory**: Identify all value held or managed by this contract — ETH, ERC-20 tokens, LP positions, NFTs, or any other on-chain value. If the contract holds no value and manages no value on behalf of users, state this and return zero findings.
 
-3. **Fund Flow Tracing**: Trace how value (ETH, tokens) enters, moves through, and exits the contract.
+2. **Attack Surface Mapping**: Identify every public/external function that an unprivileged caller can invoke. Ignore view/pure functions. Ignore functions gated behind onlyOwner, access control, or role-based modifiers — admin abuse is out of scope.
 
-4. **Vulnerability Scan**: Check for the following vulnerability categories:
-   - **Reentrancy**: State changes after external calls, cross-function reentrancy, read-only reentrancy
-   - **Access Control**: Missing modifiers, improper role checks, unprotected initializers
-   - **Integer Issues**: Overflow/underflow (pre-0.8.0), unsafe casting, precision loss
-   - **Flash Loan Attacks**: Price manipulation via flash loans, oracle manipulation vectors
-   - **Oracle Manipulation**: Spot price dependencies, TWAP manipulation, stale price data
-   - **Unchecked External Calls**: Missing return value checks, silent failures
-   - **Storage Collisions**: Proxy pattern issues, unstructured storage conflicts
-   - **Logic Errors**: Incorrect math in swaps/lending/staking, wrong fee calculations, rounding errors
-   - **Denial of Service**: Unbounded loops, block gas limit issues, griefing vectors
-   - **Front-Running**: MEV extraction, sandwich attack vectors, transaction ordering dependencies
-   - **Privilege Escalation**: Owner key compromise impact, centralization risks, upgrade risks
-   - **Price Manipulation**: Manipulable pricing functions, reserve ratio attacks
+3. **Fund-Theft Exploit Search**: For each entry point, determine if an attacker can exploit it to extract or lock value. Specifically check for:
+   - **Reentrancy leading to fund theft**: State changes after external calls that allow draining balances
+   - **Flash loan attacks**: Manipulating prices, reserves, or balances within a single transaction to extract profit
+   - **Oracle manipulation**: Exploiting spot prices, stale data, or manipulable price feeds to steal funds
+   - **Unchecked external call returns**: Silent transfer failures that create accounting mismatches an attacker can exploit
+   - **Logic errors in accounting**: Incorrect share/balance calculations that allow withdrawing more than deposited
+   - **Storage collisions in proxies**: Exploitable storage layout conflicts that corrupt critical state (balances, ownership)
+   - **Token integration exploits**: Fee-on-transfer, rebasing, or non-standard ERC-20 behaviors that break accounting
+   - **Cross-function reentrancy**: Exploiting state inconsistencies across multiple functions during a callback
+   - **Signature replay or malleability**: Replaying or forging permit/meta-transaction signatures to steal allowances
+   - **Integer overflow/underflow**: Arithmetic bugs that allow minting infinite tokens or bypassing balance checks (especially pre-0.8.0 or unchecked blocks)
 
-5. **Findings**: For each vulnerability found, provide:
-   - A severity rating: Critical, High, Medium, Low, or Informational
-   - A confidence score from 0.0 to 1.0
-   - The specific function and file affected
-   - Approximate line numbers if possible
-   - A clear description of the vulnerability
-   - The potential impact if exploited
-   - A recommended fix
+4. **Exploit Validation**: For each potential finding, mentally execute the full attack step by step. Verify:
+   - The attacker does NOT need any special role or privilege
+   - The attacker extracts real value (not just causes a revert or DoS)
+   - The attack is profitable after gas costs
+   - No existing check or guard prevents the attack path
+   - The vulnerability is in the analyzed code, not in hypothetical external contracts
+
+5. **False Positive Elimination**: Before including any finding, apply these filters:
+   - Trace the FULL validation chain — does earlier code prevent exploitation?
+   - Check if conditional logic makes the vulnerable code path unreachable
+   - Verify external calls actually go to attacker-controlled addresses
+   - Confirm arithmetic issues can actually occur given input constraints
+   - Ensure the finding is not about admin/owner misbehavior
 
 ## Output Format
 
@@ -51,25 +51,33 @@ Respond with valid JSON matching this exact structure:
     "type": "<contract type>",
     "name": "<contract name>",
     "description": "<brief description of what the contract does>",
-    "publicFunctions": ["<function signatures>"],
+    "valueAtRisk": "<description of what funds/value the contract holds or manages>",
+    "publicFunctions": ["<function signatures callable by anyone>"],
     "totalSourceFiles": <number>,
     "totalLines": <number>
   },
   "findings": [
     {
       "id": "<unique id like FINDING-001>",
-      "severity": "<Critical|High|Medium|Low|Informational>",
-      "title": "<short descriptive title>",
-      "description": "<detailed description of the vulnerability>",
+      "severity": "Critical",
+      "title": "<short descriptive title focused on the fund-theft vector>",
+      "description": "<detailed description: what the vulnerability is, why it exists, and exactly how an attacker exploits it step by step>",
       "affectedFunction": "<function name or signature>",
       "affectedFile": "<source file path>",
       "lineNumbers": "<e.g. 42-58>",
-      "impact": "<what could happen if exploited>",
-      "recommendation": "<how to fix it>",
-      "confidence": <0.0 to 1.0>,
-      "category": "<vulnerability category>"
+      "impact": "<concrete impact: what funds are stolen, from whom, upper bound of loss>",
+      "recommendation": "<specific code fix to prevent the exploit>",
+      "confidence": <0.8 to 1.0>,
+      "category": "<vulnerability category from the list above>"
     }
   ]
 }
+
+IMPORTANT:
+- The "findings" array MUST be empty if no fund-theft vulnerability exists. Zero findings is a valid and expected output.
+- Every finding MUST have severity "Critical". If it is not Critical, do not include it.
+- Every finding MUST describe a concrete attack by an unprivileged third party that results in loss of funds.
+- Confidence MUST be 0.8 or higher. If you are less confident, do not include the finding.
+- Do NOT include findings about admin abuse, gas optimization, code quality, centralization risk, or denial of service.
 
 Only output the JSON object, no additional text or markdown formatting.

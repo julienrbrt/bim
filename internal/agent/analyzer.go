@@ -240,25 +240,21 @@ func (t *AnalyzerTool) buildSummary(result *AnalyzeResult, analysis *analyzer.An
 		analysis.Duration.Round(time.Second),
 	)
 
-	fmt.Fprintf(&b,
-		"Found %d total findings: %d Critical, %d High, %d Medium, %d Low, %d Informational.\n",
-		result.TotalFindings,
-		result.CriticalCount,
-		result.HighCount,
-		result.MediumCount,
-		result.LowCount,
-		result.InfoCount,
-	)
-
 	actionable := analysis.CriticalAndHighFindings()
 	if len(actionable) > 0 {
-		fmt.Fprintf(&b, "\n%d actionable findings (Critical/High) for bug bounty reporting:\n", len(actionable))
+		fmt.Fprintf(&b,
+			"Found %d CRITICAL fund-theft vulnerabilities exploitable by a third-party attacker:\n",
+			len(actionable),
+		)
 		for i, f := range actionable {
-			fmt.Fprintf(&b, "  %d. [%s] %s — %s (confidence: %.0f%%)\n",
-				i+1, f.Severity, f.Title, f.AffectedFunction, f.Confidence*100)
+			fmt.Fprintf(&b, "  %d. %s — %s (confidence: %.0f%%)\n",
+				i+1, f.Title, f.AffectedFunction, f.Confidence*100)
+			if f.Impact != "" {
+				fmt.Fprintf(&b, "     Impact: %s\n", f.Impact)
+			}
 		}
 	} else {
-		b.WriteString("\nNo Critical or High severity findings detected.")
+		b.WriteString("No critical fund-theft vulnerabilities found. The contract appears safe from third-party exploits.")
 	}
 
 	if analysis.Summary.Description != "" {

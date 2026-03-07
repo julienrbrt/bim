@@ -1,4 +1,4 @@
-Generate a complete bug bounty report for the following security finding.
+Generate a complete bug bounty report for an EXTREMELY CRITICAL vulnerability where a third-party attacker can steal or permanently lock funds.
 
 ## Target Contract
 
@@ -29,33 +29,49 @@ Generate a complete bug bounty report for the following security finding.
 
 Produce a report with the following sections in this exact order. Use Markdown formatting.
 
+IMPORTANT CONSTRAINTS:
+- The attacker in this scenario is an UNPRIVILEGED THIRD PARTY — not the contract owner, not an admin, not any privileged role.
+- The exploit MUST result in direct theft or permanent locking of funds (ETH, tokens, LP shares, or other on-chain value).
+- The exploit MUST be profitable for the attacker after gas costs.
+- Do NOT describe admin abuse, rugpull vectors, or centralization risks — those are trust assumptions, not hacks.
+- Do NOT describe denial of service, front-running, or MEV unless they directly cause loss of user funds.
+
 ### 1. Exploit Narrative
 
-Provide a numbered, step-by-step description of how an attacker would exploit this vulnerability. Include:
-- Preconditions required
-- Exact function calls the attacker makes
-- State changes at each step
-- How the attacker extracts value
+Provide a numbered, step-by-step transaction sequence showing exactly how an unprivileged attacker steals funds. Include:
+- Preconditions required (contract state, balances, liquidity)
+- Whether a flash loan is needed and from which protocol
+- Exact function calls the attacker makes, in order, with parameters
+- State changes at each step and why they enable the next step
+- How and where the attacker extracts stolen value
+- Estimated profit for the attacker (or "all funds in the contract" if applicable)
 
 ### 2. Impact Assessment
 
-Describe the impact in concrete terms:
-- What funds or assets are at risk
-- Who is affected (all users, specific roles, the protocol itself)
-- Upper bound of potential loss if known
-- Whether the exploit can be repeated
+Describe the impact in concrete, quantified terms:
+- Exactly what funds are at risk (e.g. "all ETH deposited by users", "the entire token reserve")
+- Who loses money (all depositors, specific users, the protocol treasury, LP providers, etc.)
+- Upper bound of potential loss in dollar terms or token amounts if estimable
+- Whether the exploit can be repeated to drain funds incrementally
+- Whether the exploit can be front-run by MEV bots to amplify damage
+- Time sensitivity: can this be exploited right now with no setup, or does it require specific market conditions?
 
 ### 3. Proof of Concept
 
-Write a complete Foundry test in Solidity that demonstrates the exploit. The test must:
+Write a complete Foundry test in Solidity that demonstrates the attacker stealing funds. The test must:
 - Be a standalone file that compiles with `forge test`
-- Import necessary interfaces and set up the environment in `setUp()`
-- Have a test function named `test_exploit` that executes the attack
-- Use `assertGt`, `assertEq`, or similar assertions to prove the exploit succeeded
-- Include comments explaining each step
-- Use `vm.prank`, `vm.deal`, and other Foundry cheatcodes as needed
-- Fork mainnet state if the contract is already deployed, using the chain ID and address provided above
+- Import "forge-std/Test.sol"
+- Set up the environment in `setUp()` including any required token balances, approvals, or liquidity
+- Have a test function named `test_exploit` that executes the full attack as an unprivileged attacker address
+- Use `vm.prank` to execute calls as the attacker (NOT as the owner or admin)
+- Use assertions to prove funds were stolen: `assertGt(attackerBalanceAfter, attackerBalanceBefore)`
+- Include comments explaining each step of the attack
+- Fork mainnet state using `vm.createSelectFork()` if the contract is already deployed, using the chain ID and address provided above
+- If a flash loan is part of the attack, implement the callback interface and demonstrate the full flow
 
 ### 4. Recommended Fix
 
-Provide specific code changes to fix the vulnerability. Show the exact lines to change with before/after diffs.
+Provide the specific code change to prevent this exploit. Show exact before/after diffs with line numbers. The fix must:
+- Prevent the specific attack vector without breaking legitimate functionality
+- Be minimal and targeted — do not suggest architectural rewrites
+- Include a brief explanation of why the fix works

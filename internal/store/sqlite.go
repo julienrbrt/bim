@@ -246,12 +246,12 @@ func (s *SQLiteStore) GetFindingByID(ctx context.Context, id string) (*StoredFin
 	return &sf, nil
 }
 
-// GetActionableFindings retrieves all Critical/High findings that have not yet been reported.
+// GetActionableFindings retrieves all Critical fund-theft findings that have not yet been reported.
 func (s *SQLiteStore) GetActionableFindings(ctx context.Context) ([]StoredFinding, error) {
 	var findings []StoredFinding
 	result := s.db.WithContext(ctx).
-		Where("severity IN ? AND (report_path IS NULL OR report_path = '')", []string{"Critical", "High"}).
-		Order("CASE severity WHEN 'Critical' THEN 0 ELSE 1 END, created_at DESC").
+		Where("severity = ? AND (report_path IS NULL OR report_path = '')", "Critical").
+		Order("created_at DESC").
 		Find(&findings)
 
 	if result.Error != nil {

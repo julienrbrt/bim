@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/julienrbrt/bim/internal/analyzer"
 	"github.com/julienrbrt/bim/internal/config"
 	"github.com/julienrbrt/bim/internal/store"
 )
@@ -232,11 +233,23 @@ func (o *Orchestrator) GeneratePoC(ctx context.Context, findingID string) (strin
 
 // OrchestratorSystemPrompt returns the system instruction for the root ADK agent.
 func OrchestratorSystemPrompt() string {
-	return `You are BiM, an AI-powered smart contract security agent.
+	return `You are BiM, an AI-powered smart contract exploit hunter.
 
-Your mission is to discover newly published smart contracts on Ethereum and Base,
-analyze them for critical and high-severity security vulnerabilities, and generate
-detailed bug bounty reports with proof-of-concept exploit code.
+Your SOLE MISSION is to discover newly published smart contracts on Ethereum and Base
+and find EXTREMELY CRITICAL vulnerabilities where a third-party attacker (not the owner,
+not an admin) can steal or permanently lock user or protocol funds. You then generate
+bug bounty reports with proof-of-concept exploit code demonstrating the fund theft.
+
+You do NOT care about:
+- Gas optimizations, code quality, or best practices
+- Centralization risks, admin abuse, or rugpull vectors
+- Denial of service, front-running, or MEV without direct fund theft
+- Medium, Low, or Informational severity findings
+- High severity findings that do not involve direct loss of funds via third-party exploitation
+- Theoretical concerns without a concrete, step-by-step exploit path
+
+You ONLY report findings where an unprivileged external attacker can profitably steal funds.
+A report with zero findings is a good report. False positives waste everyone's time.
 
 ## Background Polling
 
@@ -253,17 +266,15 @@ Use **discovery_status** to check what the background loop has found so far.
    Chains that were already polled within the current interval are skipped automatically.
 
 2. **list_contracts** — List tracked contracts and their statuses. Supports filtering by status
-   (pending, analyzing, analyzed, reported, skipped, failed) and chain ID. Use this to see which
-   contracts still need analysis, which ones failed, or to get a full inventory.
+   (pending, analyzing, analyzed, reported, skipped, failed) and chain ID.
 
-3. **analyze_contract** — Run an AI-powered security analysis on a verified contract.
-   Provide a chain ID and contract address. Returns findings ranked by severity.
+3. **analyze_contract** — Run security analysis on a verified contract looking for critical
+   fund-theft vulnerabilities exploitable by third-party attackers.
 
-4. **generate_report** — Generate a bug bounty report with PoC exploit code for a specific finding.
-   Provide a finding ID. Produces a Markdown report ready for submission.
+4. **generate_report** — Generate a bug bounty report with PoC exploit code for a Critical finding.
+   Only generates reports for findings where an attacker can steal funds.
 
 5. **display_report** — Display the full Markdown content of a previously generated report.
-   Provide a finding ID. Use this when the user wants to see, read, or review a report.
 
 6. **run_pipeline** — Run the full discover → analyze → report pipeline automatically.
 
@@ -271,9 +282,7 @@ Use **discovery_status** to check what the background loop has found so far.
 
 8. **reanalyze_contract** — Force a re-analysis of a previously analyzed contract.
 
-9. **discovery_status** — Check the background discovery loop status: whether it is running,
-   poll interval, total cycles completed, cumulative new contracts found, last run time, and
-   the latest discovery results. Use this to see what has been found automatically.
+9. **discovery_status** — Check the background discovery loop status.
 
 ## Usage Patterns
 
@@ -297,12 +306,12 @@ For broad surveillance:
 4. Use analyze_contract on pending contracts, or run_pipeline for automated end-to-end processing.
 
 Always present results clearly:
-- List findings with their severity, title, and affected function.
-- Highlight Critical and High findings prominently.
-- Mention when reports have been generated and where they are saved.
-- Provide actionable next steps.
+- Only highlight Critical findings where a third-party attacker can steal funds.
+- If no critical fund-theft vulnerabilities were found, say so clearly — that is a good outcome.
+- When reports are generated, mention what funds are at risk and the attack vector.
+- Do NOT pad results with non-critical findings to appear productive.
 
-Be concise but thorough. Focus on what matters: exploitable vulnerabilities.`
+Be concise. Focus exclusively on exploitable fund-theft vulnerabilities by external attackers.`
 }
 
 func (o *Orchestrator) buildPipelineSummary(result *PipelineResult) string {
@@ -332,27 +341,25 @@ func (o *Orchestrator) buildPipelineSummary(result *PipelineResult) string {
 		fmt.Fprintf(&b, "### Analysis\n\n")
 		fmt.Fprintf(&b, "- **Contracts analyzed:** %d\n", len(result.Analyses))
 
-		var totalFindings, totalCritical, totalHigh int
+		var totalFindings, totalCritical int
 		for _, ar := range result.Analyses {
 			totalFindings += ar.TotalFindings
 			totalCritical += ar.CriticalCount
-			totalHigh += ar.HighCount
 		}
 
 		fmt.Fprintf(&b, "- **Total findings:** %d\n", totalFindings)
-		fmt.Fprintf(&b, "- **Critical:** %d\n", totalCritical)
-		fmt.Fprintf(&b, "- **High:** %d\n\n", totalHigh)
+		fmt.Fprintf(&b, "- **Critical (fund-theft):** %d\n\n", totalCritical)
 
 		for _, ar := range result.Analyses {
 			switch {
 			case ar.Error != "":
 				fmt.Fprintf(&b, "- `%s` (chain %d): **FAILED** — %s\n", ar.Address, ar.ChainID, ar.Error)
-			case ar.CriticalCount+ar.HighCount > 0:
-				fmt.Fprintf(&b, "- `%s` (chain %d): %d Critical, %d High findings\n",
-					ar.Address, ar.ChainID, ar.CriticalCount, ar.HighCount)
+			case ar.CriticalCount > 0:
+				fmt.Fprintf(&b, "- `%s` (chain %d): **%d Critical fund-theft vulnerabilities found**\n",
+					ar.Address, ar.ChainID, ar.CriticalCount)
 			default:
-				fmt.Fprintf(&b, "- `%s` (chain %d): %d findings (no Critical/High)\n",
-					ar.Address, ar.ChainID, ar.TotalFindings)
+				fmt.Fprintf(&b, "- `%s` (chain %d): no critical fund-theft vulnerabilities\n",
+					ar.Address, ar.ChainID)
 			}
 		}
 		b.WriteString("\n")
@@ -401,21 +408,22 @@ func (o *Orchestrator) buildSingleContractSummary(
 	fmt.Fprintf(&b, "**Language:** %s\n\n", analysis.Language)
 
 	fmt.Fprintf(&b, "### Findings Summary\n\n")
-	fmt.Fprintf(&b, "| Severity | Count |\n|---|---|\n")
-	fmt.Fprintf(&b, "| Critical | %d |\n", analysis.CriticalCount)
-	fmt.Fprintf(&b, "| High | %d |\n", analysis.HighCount)
-	fmt.Fprintf(&b, "| Medium | %d |\n", analysis.MediumCount)
-	fmt.Fprintf(&b, "| Low | %d |\n", analysis.LowCount)
-	fmt.Fprintf(&b, "| Informational | %d |\n\n", analysis.InfoCount)
+	fmt.Fprintf(&b, "| Category | Count |\n|---|---|\n")
+	fmt.Fprintf(&b, "| Critical (fund-theft by third party) | %d |\n", analysis.CriticalCount)
+	fmt.Fprintf(&b, "| Other (not reported) | %d |\n\n", analysis.TotalFindings-analysis.CriticalCount)
 
-	if len(analysis.Findings) > 0 {
-		fmt.Fprintf(&b, "### All Findings\n\n")
-		for i, f := range analysis.Findings {
-			fmt.Fprintf(&b, "%d. **[%s]** %s\n", i+1, f.Severity, f.Title)
-			fmt.Fprintf(&b, "   - Function: `%s`\n", f.AffectedFunction)
-			fmt.Fprintf(&b, "   - Confidence: %.0f%%\n", f.Confidence*100)
+	criticalFindings := false
+	for _, f := range analysis.Findings {
+		if f.Severity == analyzer.SeverityCritical {
+			if !criticalFindings {
+				fmt.Fprintf(&b, "### Critical Fund-Theft Vulnerabilities\n\n")
+				criticalFindings = true
+			}
+			fmt.Fprintf(&b, "- **%s**\n", f.Title)
+			fmt.Fprintf(&b, "  - Function: `%s`\n", f.AffectedFunction)
+			fmt.Fprintf(&b, "  - Confidence: %.0f%%\n", f.Confidence*100)
 			if f.Impact != "" {
-				fmt.Fprintf(&b, "   - Impact: %s\n", f.Impact)
+				fmt.Fprintf(&b, "  - Impact: %s\n", f.Impact)
 			}
 			b.WriteString("\n")
 		}
@@ -431,14 +439,14 @@ func (o *Orchestrator) buildSingleContractSummary(
 				fmt.Fprintf(&b, "  - Report: `%s`\n", rr.ReportPath)
 			}
 		}
-	} else if analysis.CriticalCount+analysis.HighCount == 0 {
-		fmt.Fprintf(&b, "No Critical or High severity findings — no bug bounty reports generated.\n")
+	} else if analysis.CriticalCount == 0 {
+		fmt.Fprintf(&b, "No critical fund-theft vulnerabilities found — no bug bounty reports generated.\n")
 	}
 
 	return b.String()
 }
 
-// reportActionableFindings generates reports for all Critical/High findings
+// reportActionableFindings generates reports for all Critical fund-theft findings
 // in the given analysis result, returning results as they complete.
 func (o *Orchestrator) reportActionableFindings(ctx context.Context, ar *AnalyzeResult) []*ReportResult {
 	var reports []*ReportResult

@@ -9,31 +9,45 @@ File: {{.FilePath}}
 
 ## Instructions
 
-Provide a brief summary of this file and identify any functions that appear high-risk
-from a security perspective. Focus on:
+Your ONLY goal is to identify functions in this file that could potentially be exploited by a **third-party attacker** (not the owner, not an admin) to **steal or permanently lock funds**.
 
-- Functions that handle value transfers (ETH or tokens)
-- Functions with external calls
-- Functions that modify critical state (balances, ownership, roles)
-- Functions with complex math or business logic
-- Functions that interact with external protocols (oracles, DEXes, lending)
+Focus exclusively on:
+
+- Functions that transfer ETH or tokens to caller-controlled addresses
+- Functions with external calls that could enable reentrancy leading to fund theft
+- Functions with arithmetic that controls balances, shares, or exchange rates
+- Functions that interact with external protocols (oracles, DEXes, lending pools) where price/state manipulation could extract value
+- Functions where flash loan amplification could be used to manipulate reserves or prices within a single transaction
+
+DO NOT flag:
+
+- View/pure functions (they cannot change state)
+- Functions protected by onlyOwner, access control, or role-based modifiers (admin abuse is out of scope)
+- Functions that only emit events, update non-critical metadata, or perform housekeeping
+- Functions where the only risk is denial of service, gas inefficiency, or front-running without fund theft
+- Standard getter functions, constructors, or initializers that set admin addresses
 
 ## Output Format
 
 Respond with valid JSON:
 
 {
-  "fileSummary": "<what this file does>",
+  "fileSummary": "<what this file does and what value/funds it manages, if any>",
   "highRiskFunctions": [
     {
       "name": "<function name>",
-      "reason": "<why it's high risk>",
+      "reason": "<specific reason this function could enable fund theft by a third-party attacker>",
       "lineRange": "<approximate line range>"
     }
   ],
   "imports": ["<imported file paths>"],
   "inherits": ["<inherited contract names>"],
-  "stateVariables": ["<critical state variable names>"]
+  "stateVariables": ["<state variables that track balances, shares, or other value>"]
 }
+
+IMPORTANT:
+- The "highRiskFunctions" array MUST be empty if no function in this file has realistic fund-theft potential. An empty array is a valid and expected output.
+- Only flag functions where you can articulate a plausible attack scenario involving fund theft by an unprivileged third party.
+- Do NOT flag functions just because they look complex or handle state changes — only flag them if those state changes can lead to loss of funds via external exploitation.
 
 Only output the JSON object, no additional text or markdown formatting.

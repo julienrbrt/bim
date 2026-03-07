@@ -114,7 +114,7 @@ func (a *Analyzer) Analyze(ctx context.Context, input AnalysisInput) (*AnalysisR
 	a.logger.Info("analysis complete",
 		"analysis_id", analysisID,
 		"findings", len(findings),
-		"critical_high", len(result.CriticalAndHighFindings()),
+		"critical_fund_theft", len(result.CriticalAndHighFindings()),
 		"duration", result.Duration,
 	)
 

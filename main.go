@@ -178,7 +178,7 @@ func buildTools(orch *agentpkg.Orchestrator, discovery *agentpkg.DiscoveryTool, 
 	discoverFn, err := functiontool.New(
 		functiontool.Config{
 			Name:        "discover_contracts",
-			Description: "Poll Sourcify for new verified smart contracts on Ethereum and Base. Returns a summary of newly discovered contracts ready for analysis.",
+			Description: "Poll Sourcify for new verified smart contracts on Ethereum and Base. Returns a summary of newly discovered contracts ready for critical fund-theft vulnerability analysis.",
 		},
 		func(ctx tool.Context, _ emptyInput) (map[string]any, error) {
 			result, err := orch.RunDiscovery(ctx)
@@ -201,7 +201,7 @@ func buildTools(orch *agentpkg.Orchestrator, discovery *agentpkg.DiscoveryTool, 
 	analyzeFn, err := functiontool.New(
 		functiontool.Config{
 			Name:        "analyze_contract",
-			Description: "Run an AI-powered security analysis on a verified smart contract. Discovers the contract on Sourcify, analyzes it for vulnerabilities, and generates reports for Critical/High findings. Returns findings ranked by severity.",
+			Description: "Run an AI-powered security analysis on a verified smart contract looking exclusively for EXTREMELY CRITICAL vulnerabilities where a third-party attacker can steal or permanently lock funds. Only reports findings that represent direct fund-theft exploits by unprivileged attackers.",
 		},
 		func(ctx tool.Context, input analyzeInput) (map[string]any, error) {
 			result, err := orch.ProcessContract(ctx, input.ChainID, input.Address)
@@ -223,7 +223,7 @@ func buildTools(orch *agentpkg.Orchestrator, discovery *agentpkg.DiscoveryTool, 
 	reportFn, err := functiontool.New(
 		functiontool.Config{
 			Name:        "generate_report",
-			Description: "Generate a bug bounty report with proof-of-concept exploit code for a specific security finding.",
+			Description: "Generate a bug bounty report with proof-of-concept exploit code for a Critical fund-theft finding. The report demonstrates how an unprivileged attacker steals funds.",
 		},
 		func(ctx tool.Context, input reportInput) (map[string]any, error) {
 			result, err := orch.GenerateReport(ctx, input.FindingID)
@@ -241,7 +241,7 @@ func buildTools(orch *agentpkg.Orchestrator, discovery *agentpkg.DiscoveryTool, 
 	pipelineFn, err := functiontool.New(
 		functiontool.Config{
 			Name:        "run_pipeline",
-			Description: "Run the full discover, analyze, and report pipeline. Finds new contracts, analyzes them for vulnerabilities, and generates reports for Critical/High findings.",
+			Description: "Run the full discover, analyze, and report pipeline. Finds new contracts, analyzes them for critical fund-theft vulnerabilities exploitable by third-party attackers, and generates bug bounty reports for any findings.",
 		},
 		func(ctx tool.Context, _ emptyInput) (map[string]any, error) {
 			result, err := orch.RunFullPipeline(ctx)
@@ -263,7 +263,7 @@ func buildTools(orch *agentpkg.Orchestrator, discovery *agentpkg.DiscoveryTool, 
 	pocFn, err := functiontool.New(
 		functiontool.Config{
 			Name:        "generate_poc",
-			Description: "Generate only the Foundry proof-of-concept exploit code for a finding, without the full report.",
+			Description: "Generate only the Foundry proof-of-concept exploit code demonstrating fund theft for a Critical finding, without the full report.",
 		},
 		func(ctx tool.Context, input pocInput) (map[string]any, error) {
 			poc, err := orch.GeneratePoC(ctx, input.FindingID)
@@ -286,7 +286,7 @@ func buildTools(orch *agentpkg.Orchestrator, discovery *agentpkg.DiscoveryTool, 
 	reanalyzeFn, err := functiontool.New(
 		functiontool.Config{
 			Name:        "reanalyze_contract",
-			Description: "Force a re-analysis of a previously analyzed contract. Useful when you want a fresh look or the contract was updated.",
+			Description: "Force a re-analysis of a previously analyzed contract for critical fund-theft vulnerabilities. Useful when you want a fresh look or the contract was updated.",
 		},
 		func(ctx tool.Context, input reanalyzeInput) (map[string]any, error) {
 			result, err := orch.ReAnalyzeContract(ctx, input.ChainID, input.Address)
@@ -308,7 +308,7 @@ func buildTools(orch *agentpkg.Orchestrator, discovery *agentpkg.DiscoveryTool, 
 	displayReportFn, err := functiontool.New(
 		functiontool.Config{
 			Name:        "display_report",
-			Description: "Display the full Markdown content of a previously generated bug bounty report for a specific finding. Use this when the user asks to see, show, or read a report.",
+			Description: "Display the full Markdown content of a previously generated bug bounty report for a Critical fund-theft finding. Use this when the user asks to see, show, or read a report.",
 		},
 		func(ctx tool.Context, input displayReportInput) (map[string]any, error) {
 			content, err := orch.DisplayReport(ctx, input.FindingID)
@@ -331,7 +331,7 @@ func buildTools(orch *agentpkg.Orchestrator, discovery *agentpkg.DiscoveryTool, 
 	listContractsFn, err := functiontool.New(
 		functiontool.Config{
 			Name:        "list_contracts",
-			Description: "List tracked contracts and their statuses. Use this to see which contracts are pending analysis, which have been analyzed, which failed, etc. Supports filtering by status and chain ID.",
+			Description: "List tracked contracts and their statuses. Use this to see which contracts are pending analysis for critical fund-theft vulnerabilities, which have been analyzed, which failed, etc. Supports filtering by status and chain ID.",
 		},
 		func(ctx tool.Context, input listContractsInput) (map[string]any, error) {
 			filter := store.ContractFilter{

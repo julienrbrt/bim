@@ -1,4 +1,4 @@
-Write a Foundry proof-of-concept test that demonstrates the following vulnerability.
+Write a Foundry proof-of-concept test that demonstrates a third-party attacker stealing or permanently locking funds by exploiting the following vulnerability.
 
 **Chain ID:** {{.ChainID}}
 **Contract Address:** `{{.Address}}`
@@ -22,5 +22,9 @@ Requirements:
 - Name the contract ExploitTest and extend Test.
 - Include a setUp() function that forks mainnet using vm.createSelectFork().
 - Include a test_exploit() function that demonstrates the attack.
-- Add inline comments explaining each step.
-- Use assertions to prove the exploit succeeded.
+- The attacker MUST be an unprivileged address (not the owner, admin, or any privileged role). Use vm.prank() with a fresh attacker address.
+- Do NOT use vm.prank() with the contract owner or any admin address — the exploit must be executable by anyone.
+- If the attack requires a flash loan, implement the appropriate callback interface (e.g. IFlashLoanReceiver) and demonstrate the full borrow-exploit-repay flow.
+- Use assertions to prove funds were stolen: the attacker's balance after the exploit must be greater than before (e.g. assertGt(attackerBalanceAfter, attackerBalanceBefore)).
+- Add inline comments explaining each step of the attack sequence.
+- Log the attacker's profit using console.log for clarity.

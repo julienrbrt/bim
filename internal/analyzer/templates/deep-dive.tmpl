@@ -15,15 +15,39 @@ The following functions were identified as high-risk and need thorough analysis:
 
 ## Instructions
 
-For each flagged function, perform a detailed security analysis:
+Your ONLY goal is to determine whether any of these flagged functions can be exploited by a **third-party attacker** (not the owner, not an admin, not a privileged role) to **steal or permanently lock funds**.
 
-1. Trace all possible execution paths
-2. Identify all external calls and their implications
-3. Check for state inconsistencies before/after external calls
-4. Verify arithmetic operations for correctness
-5. Check access control and authorization
-6. Look for edge cases in the logic
-7. Consider how this function interacts with other contract functions
+For each flagged function, perform the following:
+
+1. Trace all possible execution paths reachable by an unprivileged caller
+2. Identify all external calls and whether they can re-enter or be directed to attacker-controlled contracts
+3. Check for state inconsistencies before/after external calls that enable fund extraction
+4. Verify arithmetic operations for exploitable errors (overflow, underflow, precision loss that leaks value)
+5. Trace fund flows: can an attacker withdraw more than they deposited, mint tokens for free, or redirect funds?
+6. Consider flash loan amplification: can an attacker use borrowed capital to manipulate prices, reserves, or balances within a single transaction?
+7. Check how this function interacts with other contract functions — can cross-function reentrancy drain funds?
+
+## Exploit Validation
+
+Before reporting ANY finding, verify ALL of the following:
+
+- The attacker does NOT need any special role, privilege, or admin access
+- The attacker extracts real monetary value (ETH, tokens, LP shares, etc.)
+- The attack is profitable after gas costs
+- No existing validation, guard, or check prevents the attack path
+- You can describe the exact call sequence step by step
+- The vulnerability is in the analyzed code, not in hypothetical external dependencies
+
+## False Positive Elimination
+
+Apply these filters to every potential finding before including it:
+
+- Trace the FULL validation chain — does earlier code prevent this exploit?
+- Check if conditional logic makes the vulnerable path unreachable
+- Verify the attacker can actually control the inputs needed to trigger the bug
+- Confirm the arithmetic issue can occur given real-world input constraints
+- Do NOT report admin/owner misbehavior — that is a trust assumption, not a hack
+- Do NOT report denial of service, gas optimization, code quality, or centralization risks
 
 ## Output Format
 
@@ -33,19 +57,25 @@ Respond with valid JSON matching this exact structure:
   "findings": [
     {
       "id": "<unique id like FINDING-001>",
-      "severity": "<Critical|High|Medium|Low|Informational>",
-      "title": "<short descriptive title>",
-      "description": "<detailed description of the vulnerability>",
+      "severity": "Critical",
+      "title": "<short title describing the fund-theft vector>",
+      "description": "<detailed description: what the vulnerability is, why it exists, and the exact step-by-step attack sequence>",
       "affectedFunction": "<function name or signature>",
       "affectedFile": "<source file path>",
       "lineNumbers": "<e.g. 42-58>",
-      "impact": "<what could happen if exploited>",
-      "recommendation": "<how to fix it>",
-      "confidence": <0.0 to 1.0>,
+      "impact": "<concrete impact: what funds are stolen, from whom, upper bound of loss>",
+      "recommendation": "<specific code change to prevent the exploit>",
+      "confidence": <0.8 to 1.0>,
       "category": "<vulnerability category>"
     }
   ]
 }
 
-Only report findings with Medium severity or above. Be precise and avoid false positives.
+IMPORTANT:
+- Only report findings where an unprivileged third-party attacker can steal or permanently lock funds.
+- Every finding MUST have severity "Critical". If it does not meet that bar, do not include it.
+- Confidence MUST be 0.8 or higher. If you are less confident, do not include the finding.
+- The "findings" array MUST be empty if no fund-theft vulnerability exists. Zero findings is the expected output for secure code.
+- Do NOT pad the results with low-confidence, theoretical, or non-fund-loss findings.
+
 Only output the JSON object, no additional text or markdown formatting.

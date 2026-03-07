@@ -174,7 +174,7 @@ func (t *ReporterTool) GenerateForFinding(ctx context.Context, findingID string)
 	return result, nil
 }
 
-// GenerateAllPending generates reports for all Critical/High findings without an existing report.
+// GenerateAllPending generates reports for all Critical fund-theft findings without an existing report.
 func (t *ReporterTool) GenerateAllPending(ctx context.Context) ([]*ReportResult, error) {
 	findings, err := t.store.GetActionableFindings(ctx)
 	if err != nil {

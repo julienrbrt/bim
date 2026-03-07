@@ -617,16 +617,13 @@ func TestGetActionableFindings(t *testing.T) {
 		t.Fatalf("GetActionableFindings failed: %v", err)
 	}
 
-	if len(got) != 2 {
-		t.Fatalf("count = %d, want 2", len(got))
+	if len(got) != 1 {
+		t.Fatalf("count = %d, want 1 (only Critical fund-theft findings)", len(got))
 	}
 
-	// Critical should come first.
+	// Only Critical findings should be returned.
 	if got[0].Finding.Severity != analyzer.SeverityCritical {
-		t.Errorf("first finding severity = %q, want Critical", got[0].Finding.Severity)
-	}
-	if got[1].Finding.Severity != analyzer.SeverityHigh {
-		t.Errorf("second finding severity = %q, want High", got[1].Finding.Severity)
+		t.Errorf("finding severity = %q, want Critical", got[0].Finding.Severity)
 	}
 }
 
@@ -650,7 +647,7 @@ func TestGetActionableFindings_ExcludesReported(t *testing.T) {
 		{
 			ID: "F2", ChainID: 1, Address: "0xabc", AnalysisID: "a1",
 			Finding: analyzer.Finding{
-				ID: "F2", Severity: analyzer.SeverityHigh, Title: "Not Yet Reported",
+				ID: "F2", Severity: analyzer.SeverityCritical, Title: "Not Yet Reported",
 			},
 		},
 	}
@@ -670,7 +667,7 @@ func TestGetActionableFindings_ExcludesReported(t *testing.T) {
 	}
 
 	if len(got) != 1 {
-		t.Fatalf("count = %d, want 1 (should exclude the already-reported finding)", len(got))
+		t.Fatalf("count = %d, want 1 (should exclude the already-reported Critical finding)", len(got))
 	}
 
 	if got[0].ID != "F2" {
