@@ -175,6 +175,11 @@ func defaults() Config {
 			"Multicall",
 			"Clones",
 			"ERC1967Utils",
+			// Common contracts
+			"BeaconProxy",
+			"SafeProxy",
+			"GnosisSafeProxy",
+			"Counter",
 		},
 		Chains: []Chain{
 			{ID: 1, Name: "Ethereum Mainnet", RPCURL: "https://eth.llamarpc.com"},

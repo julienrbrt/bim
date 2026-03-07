@@ -1,142 +1,49 @@
-# BiM
+# BiM - Bug-in-the-Machine
 
 > [!WARNING]
-> This project is ~80% AI-generated. The code, documentation, and analysis skills were largely produced by LLMs with human guidance and review. Use at your own risk — always verify findings manually before acting on them.
+> ~80% AI-generated. Always verify findings manually before acting on them.
 
-BiM is an AI-powered smart contract security agent for EVM blockchain. It continuously discovers newly verified contracts via [Sourcify](https://docs.sourcify.dev/docs/intro), runs deep security analysis on their source code using a choosen model, and produces bug bounty reports complete with Foundry proof-of-concept exploits — all from a terminal UI you can chat with.
+AI-powered smart contract security agent for EVM chains. Discovers newly verified contracts via [Sourcify](https://docs.sourcify.dev/docs/intro), analyzes their source code with Gemini, and generates bug bounty reports with Foundry PoC exploits — all from a chat-driven terminal UI.
 
-Built with the [Google ADK for Go](https://google.github.io/adk-docs/get-started/go/) and wrapped in a [Bubbletea v2](https://charm.land/bubbletea) TUI.
+Built with the [Google ADK for Go](https://google.github.io/adk-docs/get-started/go/) and [Bubbletea v2](https://charm.land/bubbletea).
 
 ## How it works
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│  Sourcify API                                             │
-│  (recently verified contracts)                            │
-└────────────────┬──────────────────────────────────────────┘
-                 │ poll every N seconds
-                 ▼
-┌───────────────────────────────────────────────────────────┐
-│  Discovery                                                │
-│  Store new contracts in SQLite with status "pending"      │
-└────────────────┬──────────────────────────────────────────┘
-                 │
-                 ▼
-┌───────────────────────────────────────────────────────────┐
-│  Analyzer (LLM AI)                                        │
-│  Single-pass or two-pass strategy depending on size       │
-│  Augmented with embedded analysis skills                  │
-│  Outputs findings ranked by severity                      │
-└────────────────┬──────────────────────────────────────────┘
-                 │ Critical / High findings
-                 ▼
-┌───────────────────────────────────────────────────────────┐
-│  Reporter (LLM AI)                                        │
-│  Generates Markdown bug bounty report + Foundry PoC       │
-│  Saves reports to data/ directory                         │
-└───────────────────────────────────────────────────────────┘
+Sourcify API → Discovery → Analyzer (LLM) → Reporter (LLM)
+                  ↓              ↓                ↓
+               SQLite       skip/findings     Markdown report
+                                               + Foundry PoC
 ```
 
-The entire pipeline is exposed as a set of **ADK tools** that the LLM agent can call autonomously or on your command through the chat interface.
+1. **Discovery** — polls Sourcify for newly verified contracts and stores them as `pending` in SQLite.
+2. **Analyzer** — skips known-safe contracts (OZ interfaces and stateless libraries), then runs single-pass or two-pass LLM analysis depending on contract size. Outputs findings by severity.
+3. **Reporter** — for Critical/High findings, generates a Markdown bug bounty report with a Foundry PoC and recommended fix.
 
-## TUI
-
-BiM runs as a full-screen terminal application with two tabs:
-
-```
-┌─────────────────────────────────────────────┐
-│ [Chat]  [Logs]            ⏳ Analyzing …    │  ← tab bar
-├─────────────────────────────────────────────┤
-│                                             │
-│   You: analyze 0xABC…                       │
-│   ⚙ Calling Analyzing contract             │
-│   ✔ Analyzing contract complete            │
-│   BiM: Found 3 findings (1 Critical) …      │  ← scrollable viewport
-│                                             │
-├─────────────────────────────────────────────┤
-│ > _                                         │  ← text input
-└─────────────────────────────────────────────┘
-```
-
-| Key             | Action                       |
-| --------------- | ---------------------------- |
-| `Tab`           | Switch between Chat and Logs |
-| `Enter`         | Submit prompt                |
-| `↑` / `↓`       | Scroll viewport              |
-| `PgUp` / `PgDn` | Scroll viewport (page)       |
-| `Ctrl+C`        | Quit                         |
-
-The **Chat** tab is your conversation with the agent. Tool invocations are shown in real time as they happen (e.g. `⚙ Calling Discovering contracts`), and streaming model output renders live.
-
-The **Logs** tab captures all `slog` output from every subsystem — discovery polling, Sourcify HTTP calls, analyzer passes, report generation — with colour-coded severity (yellow for WARN, red for ERROR).
-
-## Agent tools
-
-These are the tools the LLM agent has access to. You can ask for them by name or describe what you want in natural language.
-
-| Tool                 | Description                                                       |
-| -------------------- | ----------------------------------------------------------------- |
-| `discover_contracts` | Trigger an immediate discovery cycle across configured chains     |
-| `list_contracts`     | List tracked contracts filtered by status and/or chain ID         |
-| `analyze_contract`   | Run security analysis on a specific contract (chain ID + address) |
-| `generate_report`    | Generate a bug bounty report for a finding                        |
-| `run_pipeline`       | Run the full discover → analyze → report pipeline                 |
-| `generate_poc`       | Generate only the Foundry PoC exploit for a finding               |
-| `reanalyze_contract` | Force re-analysis of a previously analyzed contract               |
-| `discovery_status`   | Check background discovery loop status and results                |
-
-A background discovery loop polls Sourcify automatically at the configured interval. You do not need to trigger discovery manually for routine monitoring.
+The whole pipeline runs autonomously in the background, or you can drive it manually from the chat.
 
 ## Setup
 
-### Prerequisites
-
-- **Go 1.26+**
-- A **Google Cloud API key** ([get one here](https://aistudio.google.com/app/apikey))
-
-### Install and run
+**Prerequisites:** Go 1.26+, [Google Gemini API key](https://aistudio.google.com/app/apikey)
 
 ```sh
 go install github.com/julienrbrt/bim@main
-```
-
-Copy the `config.example.yaml` and set your `google_api_key`, then:
-
-```sh
-bim -c ./config.yaml
+cp config.example.yaml config.yaml   # then fill in google_api_key
+bim -c config.yaml
 ```
 
 ## Configuration
 
-BiM is configured via a YAML file. The config path is resolved with the following precedence:
-
-1. **`-c` / `--config` flag** — `bim -c ./my-config.yaml`
-2. **`BIM_CONFIG` environment variable** — `BIM_CONFIG=./my-config.yaml bim`
-3. **Default** — `config.yaml` in the current directory
+All fields have sensible defaults except `google_api_key`. Key options:
 
 ```yaml
-# Required — Google Cloud API key.
-google_api_key: "YOUR_KEY"
+google_api_key: "YOUR_KEY" # required
+model_name: gemini-2.5-pro # Gemini model to use
+poll_interval: 60s # how often to poll Sourcify
+max_single_pass_tokens: 200000 # threshold for two-pass analysis
+log_level: info # debug | info | warn | error
+data_dir: ./data # reports + SQLite database
 
-# Model to use (default: gemini-2.5-pro).
-model_name: gemini-2.5-pro
-
-# Logging verbosity: debug, info, warn, error.
-log_level: info
-
-# Directory for reports and persistent data.
-data_dir: ./data
-
-# SQLite database path.
-db_path: ./data/bim.db
-
-# Sourcify API base URL.
-sourcify_base_url: https://sourcify.dev/server
-
-# Background discovery poll interval.
-poll_interval: 60s
-
-# Chains to monitor.
 chains:
   - id: 1
     name: Ethereum Mainnet
@@ -144,22 +51,29 @@ chains:
   - id: 8453
     name: Base
     rpc_url: https://mainnet.base.org
+
+# Optional: extend the skip list (case-insensitive name substrings).
+# Defaults cover all OZ interfaces and stateless libraries.
+# skipped_contracts:
+#   - MyInternalHelper
 ```
 
-All settings have sensible defaults except `google_api_key`.
+## Agent tools
+
+| Tool                 | Description                                           |
+| -------------------- | ----------------------------------------------------- |
+| `run_pipeline`       | Full discover → analyze → report pipeline             |
+| `discover_contracts` | Trigger an immediate discovery cycle                  |
+| `analyze_contract`   | Analyze a specific contract by chain ID + address     |
+| `reanalyze_contract` | Force re-analysis of a previously analyzed contract   |
+| `generate_report`    | Generate a bug bounty report + PoC for a finding      |
+| `generate_poc`       | Generate only the Foundry PoC for a finding           |
+| `display_report`     | Print a previously generated report                   |
+| `list_contracts`     | List tracked contracts, filter by status and/or chain |
+| `discovery_status`   | Check background discovery loop status                |
 
 ## Analysis skills
 
-The analyzer is augmented with a set of embedded **skills** — domain-specific knowledge files that are injected into the system prompt based on the contract being analyzed. Current skills include:
+Skills are domain-specific knowledge files injected into the system prompt, adapted from [Trail of Bits](https://github.com/trailofbits/skills):
 
-- **Entry-point analyzer** — identifies external/public attack surface
-- **Token integration analyzer** — detects ERC-20/721 integration pitfalls
-- **Variant analysis** — finds known vulnerability patterns and their variants
-- **False-positive patterns** — reduces noise by filtering common non-issues
-- **Audit prep & guidelines** — structures output for bug bounty submission
-
-Skills are embedded at compile time from `internal/analyzer/skills/*.md` and selected dynamically per contract.
-
-## License
-
-[MIT](license) — Copyright (c) 2026 Julien Robert and contributors.
+`entry-point-analyzer` · `token-integration-analyzer` · `token-assessment-categories` · `variant-analysis` · `false-positive-patterns` · `guidelines-advisor` · `audit-prep`
