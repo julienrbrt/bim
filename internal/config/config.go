@@ -175,11 +175,41 @@ func defaults() Config {
 			"Multicall",
 			"Clones",
 			"ERC1967Utils",
-			// Common contracts
+			// Common proxy / safe infrastructure — canonical, well-audited deployments.
 			"BeaconProxy",
 			"SafeProxy",
 			"GnosisSafeProxy",
+			"GnosisSafe",
+			"MultiSend",
+			"MultiSendCallOnly",
+			"SafeL2",
+			"CompatibilityFallbackHandler",
+			"TokenCallbackHandler",
+			"CreateCall",
+			"SignMessageLib",
+			// Canonical singleton infrastructure — never user-customised.
+			"EntryPoint",
+			"SenderCreator",
+			"Permit2",
+			// Well-known factory / utility deployments.
+			"Multicall3",
+			"Create2Factory",
+			"DeterministicDeploymentProxy",
+			// Common wrapped/canonical tokens — verbatim deployments.
+			"WETH9",
+			"WrappedEther",
+			// Boilerplate / tutorial contracts — no real logic.
 			"Counter",
+			"Lock",
+			"Storage",
+			"SimpleStorage",
+			"HelloWorld",
+			"NFT",
+			"Token",
+			"Migrations",
+			"ERC20Mock",
+			"ERC721Mock",
+			"ERC1155Mock",
 		},
 		Chains: []Chain{
 			{ID: 1, Name: "Ethereum Mainnet", RPCURL: "https://eth.llamarpc.com"},
