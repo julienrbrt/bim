@@ -117,6 +117,9 @@ type Model struct {
 
 	ctrlCPending bool // true after first Ctrl+C when agent is busy
 
+	chatAtBottom bool // true when the chat viewport is pinned to the bottom
+	logsAtBottom bool // true when the logs viewport is pinned to the bottom
+
 	width  int
 	height int
 
@@ -135,14 +138,16 @@ func New(cfg Config) Model {
 	ti.CharLimit = 4096
 
 	return Model{
-		cfg:       cfg,
-		activeTab: tabChat,
-		chatVP:    viewport.New(),
-		logsVP:    viewport.New(),
-		input:     ti,
-		chatLines: []string{"Welcome to BiM. Type a message and press Enter."},
-		logLines:  []string{},
-		pref:      newProgRef(),
+		cfg:          cfg,
+		activeTab:    tabChat,
+		chatVP:       viewport.New(),
+		logsVP:       viewport.New(),
+		input:        ti,
+		chatLines:    []string{"Welcome to BiM. Type a message and press Enter."},
+		logLines:     []string{},
+		pref:         newProgRef(),
+		chatAtBottom: true,
+		logsAtBottom: true,
 	}
 }
 
@@ -237,6 +242,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agentPartial = ""
 			m.agentStatus = "Starting…"
 			m.ctrlCPending = false
+			m.chatAtBottom = true
 			m.syncChatViewport()
 			return m, m.runAgent(text)
 		}
@@ -244,19 +250,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Chat tab: textinput handles typing; otherwise forward to viewport.
 		if m.activeTab == tabChat {
 			switch msg.Code {
-			case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown:
+			case tea.KeyUp, tea.KeyPgUp:
+				m.chatAtBottom = false
 				vp, cmd := m.chatVP.Update(msg)
 				m.chatVP = vp
 				cmds = append(cmds, cmd)
+			case tea.KeyDown, tea.KeyPgDown:
+				vp, cmd := m.chatVP.Update(msg)
+				m.chatVP = vp
+				cmds = append(cmds, cmd)
+				m.chatAtBottom = m.chatVP.AtBottom()
 			default:
 				ti, cmd := m.input.Update(msg)
 				m.input = ti
 				cmds = append(cmds, cmd)
 			}
 		} else {
-			vp, cmd := m.logsVP.Update(msg)
-			m.logsVP = vp
-			cmds = append(cmds, cmd)
+			switch msg.Code {
+			case tea.KeyUp, tea.KeyPgUp:
+				m.logsAtBottom = false
+				vp, cmd := m.logsVP.Update(msg)
+				m.logsVP = vp
+				cmds = append(cmds, cmd)
+			case tea.KeyDown, tea.KeyPgDown:
+				vp, cmd := m.logsVP.Update(msg)
+				m.logsVP = vp
+				cmds = append(cmds, cmd)
+				m.logsAtBottom = m.logsVP.AtBottom()
+			default:
+				vp, cmd := m.logsVP.Update(msg)
+				m.logsVP = vp
+				cmds = append(cmds, cmd)
+			}
 		}
 
 		return m, tea.Batch(cmds...)
@@ -319,6 +344,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		vp, cmd := m.chatVP.Update(msg)
 		m.chatVP = vp
 		cmds = append(cmds, cmd)
+		// If the viewport moved (e.g. mouse wheel scroll), update the pin state.
+		if !m.chatVP.AtBottom() {
+			m.chatAtBottom = false
+		} else {
+			m.chatAtBottom = true
+		}
 		ti, cmd2 := m.input.Update(msg)
 		m.input = ti
 		cmds = append(cmds, cmd2)
@@ -326,6 +357,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		vp, cmd := m.logsVP.Update(msg)
 		m.logsVP = vp
 		cmds = append(cmds, cmd)
+		// If the viewport moved (e.g. mouse wheel scroll), update the pin state.
+		if !m.logsVP.AtBottom() {
+			m.logsAtBottom = false
+		} else {
+			m.logsAtBottom = true
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -399,7 +436,9 @@ func (m *Model) syncChatViewport() {
 		content = lipgloss.Wrap(content, m.width, "")
 	}
 	m.chatVP.SetContent(content)
-	m.chatVP.GotoBottom()
+	if m.chatAtBottom {
+		m.chatVP.GotoBottom()
+	}
 }
 
 func (m *Model) syncLogsViewport() {
@@ -412,7 +451,9 @@ func (m *Model) syncLogsViewport() {
 		content = lipgloss.Wrap(content, m.width, "")
 	}
 	m.logsVP.SetContent(content)
-	m.logsVP.GotoBottom()
+	if m.logsAtBottom {
+		m.logsVP.GotoBottom()
+	}
 }
 
 // ADK runner.
