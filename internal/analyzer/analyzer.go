@@ -123,7 +123,7 @@ func (a *Analyzer) Analyze(ctx context.Context, input AnalysisInput) (*AnalysisR
 
 func (a *Analyzer) analyzeSinglePass(ctx context.Context, input AnalysisInput) ([]Finding, error) {
 	chainName := a.cfg.ChainName(input.ChainID)
-	prompt := BuildAnalysisPrompt(input.ContractName, chainName, input.Address, input.Sources)
+	prompt := BuildAnalysisPrompt(input.ContractName, chainName, input.Address, input.Sources, input.ExternalContracts)
 	systemPrompt := a.buildSystemPrompt(input.Sources, input.Language)
 
 	a.logger.Debug("sending single-pass analysis prompt",
@@ -207,7 +207,7 @@ func (a *Analyzer) analyzeTwoPass(ctx context.Context, input AnalysisInput) ([]F
 		return nil, fmt.Errorf("marshaling flagged functions: %w", err)
 	}
 
-	prompt := BuildDeepDivePrompt(input.ContractName, input.Sources, string(flaggedJSON))
+	prompt := BuildDeepDivePrompt(input.ContractName, input.Sources, input.ExternalContracts, string(flaggedJSON))
 	response, err := a.llm.Generate(ctx, systemPrompt, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("deep-dive LLM generation failed: %w", err)

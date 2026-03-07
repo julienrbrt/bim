@@ -157,6 +157,20 @@ func (r *AnalysisResult) HasActionableFindings() bool {
 	return false
 }
 
+// ExternalContract holds the source code of a contract that the analyzed
+// contract interacts with (e.g. a proxy implementation, an oracle, a DEX pool).
+type ExternalContract struct {
+	// Address is the on-chain address of the external contract.
+	Address string
+	// Name is the short contract name, if known.
+	Name string
+	// Role describes how the target contract relates to the one being analyzed
+	// (e.g. "proxy implementation", "price oracle", "token").
+	Role string
+	// Sources maps source file paths to their content.
+	Sources map[string]string
+}
+
 // AnalysisInput is the input provided to the analyzer for a single contract.
 type AnalysisInput struct {
 	// ChainID is the chain where the contract is deployed.
@@ -171,4 +185,8 @@ type AnalysisInput struct {
 	CompilerVersion string
 	// ContractName is the fully qualified contract name.
 	ContractName string
+	// ExternalContracts holds the verified source code of contracts that this
+	// contract interacts with. Populated on a best-effort basis from Sourcify.
+	// The LLM uses these to reason about cross-contract exploit paths.
+	ExternalContracts []ExternalContract
 }

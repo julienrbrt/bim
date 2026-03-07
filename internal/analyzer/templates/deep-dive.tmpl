@@ -6,6 +6,17 @@ Contract: {{.ContractName}}
 ## Source Code
 
 {{.SourceBlock}}
+{{- if .ExternalBlock}}
+
+## External Contracts (Protocol Dependencies)
+
+The following contracts are called or depended upon by the contract above. Their
+source code is provided so you can reason about cross-contract exploit paths —
+price manipulation through an oracle, reentrancy via a token callback, flash loan
+amplification through a DEX pool, etc.
+
+{{.ExternalBlock}}
+{{- end}}
 
 ## Flagged Functions
 

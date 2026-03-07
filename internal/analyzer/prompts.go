@@ -52,13 +52,14 @@ func SystemPrompt() string {
 }
 
 // BuildAnalysisPrompt constructs the full analysis prompt for a contract.
-func BuildAnalysisPrompt(contractName, chainName, address string, sources map[string]string) string {
+func BuildAnalysisPrompt(contractName, chainName, address string, sources map[string]string, external []ExternalContract) string {
 	var buf bytes.Buffer
-	if err := analysisTmpl.Execute(&buf, map[string]string{
-		"ChainName":    chainName,
-		"Address":      address,
-		"ContractName": contractName,
-		"SourceBlock":  formatSources(sources),
+	if err := analysisTmpl.Execute(&buf, map[string]any{
+		"ChainName":     chainName,
+		"Address":       address,
+		"ContractName":  contractName,
+		"SourceBlock":   formatSources(sources),
+		"ExternalBlock": formatExternalContracts(external),
 	}); err != nil {
 		panic(fmt.Sprintf("executing analysis.tmpl: %v", err))
 	}
@@ -79,16 +80,39 @@ func BuildSummaryPrompt(contractName, filePath, sourceCode string) string {
 }
 
 // BuildDeepDivePrompt constructs a deep-dive prompt for flagged functions.
-func BuildDeepDivePrompt(contractName string, sources map[string]string, flaggedFunctionsJSON string) string {
+func BuildDeepDivePrompt(contractName string, sources map[string]string, external []ExternalContract, flaggedFunctionsJSON string) string {
 	var buf bytes.Buffer
-	if err := deepDiveTmpl.Execute(&buf, map[string]string{
+	if err := deepDiveTmpl.Execute(&buf, map[string]any{
 		"ContractName":         contractName,
 		"SourceBlock":          formatSources(sources),
+		"ExternalBlock":        formatExternalContracts(external),
 		"FlaggedFunctionsJSON": flaggedFunctionsJSON,
 	}); err != nil {
 		panic(fmt.Sprintf("executing deep-dive.tmpl: %v", err))
 	}
 	return buf.String()
+}
+
+// formatExternalContracts renders the external contract sources into a labelled
+// block for injection into prompts. Returns an empty string when there are none.
+func formatExternalContracts(external []ExternalContract) string {
+	if len(external) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, ec := range external {
+		label := ec.Address
+		if ec.Name != "" {
+			label = fmt.Sprintf("%s (%s)", ec.Name, ec.Address)
+		}
+		fmt.Fprintf(&b, "// === External contract: %s — role: %s ===\n", label, ec.Role)
+		for path, content := range ec.Sources {
+			fmt.Fprintf(&b, "// --- File: %s ---\n", path)
+			b.WriteString(content)
+			b.WriteString("\n\n")
+		}
+	}
+	return b.String()
 }
 
 func formatSources(sources map[string]string) string {

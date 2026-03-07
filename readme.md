@@ -17,7 +17,7 @@ Sourcify API → Discovery → Analyzer (LLM) → Reporter (LLM)
 ```
 
 1. **Discovery** — polls Sourcify for newly verified contracts and stores them as `pending` in SQLite.
-2. **Analyzer** — skips known-safe contracts (OZ interfaces and stateless libraries), then runs single-pass or two-pass LLM analysis depending on contract size. Outputs findings by severity.
+2. **Analyzer** — skips known-safe contracts (OZ interfaces and stateless libraries), resolves protocol dependencies (proxy implementations, oracles, pools, routers) from Sourcify, then runs single-pass or two-pass LLM analysis with the full interaction context. Outputs findings by severity.
 3. **Reporter** — for Critical/High findings, generates a Markdown bug bounty report with a Foundry PoC and recommended fix.
 
 The whole pipeline runs autonomously in the background, or you can drive it manually from the chat.

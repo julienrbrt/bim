@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,16 @@ import (
 	"github.com/julienrbrt/bim/internal/config"
 	"github.com/julienrbrt/bim/internal/sourcify"
 	"github.com/julienrbrt/bim/internal/store"
+)
+
+// addressPattern matches Ethereum addresses (0x + 40 hex chars) in source code.
+var addressPattern = regexp.MustCompile(`\b0x[0-9a-fA-F]{40}\b`)
+
+// interestingVarPattern matches state variable or immutable declarations whose
+// name suggests they point to a protocol contract worth fetching.
+var interestingVarPattern = regexp.MustCompile(
+	`(?i)\b(?:address|I[A-Z]\w+)\s+(?:(?:public|private|internal|external|immutable|constant)\s+)*` +
+		`(\w*(?:oracle|pool|router|factory|vault|token|pair|feed|registry|controller|manager|lend|borrow|swap|bridge|staking|reward|price|market)\w*)\b`,
 )
 
 // AnalyzerTool fetches verified contract source code from Sourcify and runs
@@ -134,13 +145,16 @@ func (t *AnalyzerTool) Analyze(ctx context.Context, chainID uint64, address stri
 		return result, nil
 	}
 
+	external := t.resolveExternalContracts(ctx, chainID, sources, contract.ProxyResolution)
+
 	input := analyzer.AnalysisInput{
-		ChainID:         chainID,
-		Address:         address,
-		Sources:         sources,
-		Language:        language,
-		CompilerVersion: compilerVersion,
-		ContractName:    contractName,
+		ChainID:           chainID,
+		Address:           address,
+		Sources:           sources,
+		Language:          language,
+		CompilerVersion:   compilerVersion,
+		ContractName:      contractName,
+		ExternalContracts: external,
 	}
 
 	result.ContractName = input.ContractName
@@ -293,4 +307,112 @@ func (t *AnalyzerTool) markFailed(ctx context.Context, chainID uint64, address, 
 			"error", err,
 		)
 	}
+}
+
+// resolveExternalContracts attempts to fetch Sourcify-verified source code for
+// contracts that the analyzed contract interacts with. Two sources are used:
+//
+//  1. Sourcify's ProxyResolution field — the implementation address is always
+//     relevant when the contract is a proxy.
+//  2. Hardcoded addresses in the source that are assigned to state variables
+//     whose names suggest a protocol role (oracle, pool, router, etc.).
+//
+// Fetches are best-effort: failures are logged and silently skipped so they
+// never block the main analysis.
+func (t *AnalyzerTool) resolveExternalContracts(
+	ctx context.Context,
+	chainID uint64,
+	sources map[string]string,
+	proxy *sourcify.ProxyResolution,
+) []analyzer.ExternalContract {
+	// Collect candidate (address, role, name) tuples, deduplicating by address.
+	type candidate struct {
+		role string
+		name string
+	}
+	seen := make(map[string]candidate)
+
+	// 1. Proxy implementations reported by Sourcify.
+	if proxy != nil && proxy.IsProxy {
+		for _, impl := range proxy.Implementations {
+			addr := normalizeAddress(impl.Address)
+			if addr != "" {
+				seen[addr] = candidate{role: "proxy implementation", name: impl.Name}
+			}
+		}
+	}
+
+	// 2. Hardcoded addresses assigned to protocol-role variables in source.
+	for _, content := range sources {
+		for _, match := range interestingVarPattern.FindAllStringSubmatch(content, -1) {
+			varName := match[1]
+			// Find an address literal on the same or nearby line.
+			// We search within a small window around the variable name occurrence.
+			idx := strings.Index(content, match[0])
+			if idx < 0 {
+				continue
+			}
+			window := content[idx:]
+			// Take just enough text to cover a typical assignment line.
+			if len(window) > 300 {
+				window = window[:300]
+			}
+			for _, addr := range addressPattern.FindAllString(window, -1) {
+				addr = normalizeAddress(addr)
+				if addr == "" {
+					continue
+				}
+				if _, already := seen[addr]; !already {
+					seen[addr] = candidate{role: varName, name: ""}
+				}
+			}
+		}
+	}
+
+	if len(seen) == 0 {
+		return nil
+	}
+
+	var external []analyzer.ExternalContract
+	for addr, cand := range seen {
+		contract, err := t.sourcify.GetContract(ctx, chainID, addr)
+		if err != nil {
+			// Not verified on Sourcify or network error — skip silently.
+			t.logger.Debug("external contract not available on sourcify",
+				"address", addr,
+				"role", cand.role,
+				"error", err,
+			)
+			continue
+		}
+		if len(contract.Sources) == 0 {
+			continue
+		}
+
+		name := cand.name
+		if name == "" && contract.Compilation != nil {
+			name = contract.Compilation.Name
+		}
+
+		srcs := make(map[string]string, len(contract.Sources))
+		for path, src := range contract.Sources {
+			srcs[path] = src.Content
+		}
+
+		t.logger.Info("resolved external contract",
+			"address", addr,
+			"name", name,
+			"role", cand.role,
+			"source_files", len(srcs),
+		)
+
+		external = append(external, analyzer.ExternalContract{
+			Address: addr,
+			Name:    name,
+			Role:    cand.role,
+			Sources: srcs,
+		})
+	}
+
+	return external
 }
