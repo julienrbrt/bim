@@ -13,15 +13,22 @@ import (
 	"github.com/julienrbrt/bim/internal/store"
 )
 
+// ProgressFunc is a callback invoked by the Orchestrator to report live
+// pipeline progress.  The first argument is a short machine-friendly phase
+// label (e.g. "discovery", "analysis", "report"); the second is a
+// human-readable status message suitable for display in the TUI chat tab.
+type ProgressFunc func(phase, message string)
+
 // Orchestrator coordinates the discovery, analysis, and reporting pipeline.
 // It composes DiscoveryTool, AnalyzerTool, and ReporterTool and exposes
 // high-level methods that the ADK agent in main.go registers as tool functions.
 type Orchestrator struct {
-	discovery *DiscoveryTool
-	analyzer  *AnalyzerTool
-	reporter  *ReporterTool
-	cfg       *config.Config
-	logger    *slog.Logger
+	discovery  *DiscoveryTool
+	analyzer   *AnalyzerTool
+	reporter   *ReporterTool
+	cfg        *config.Config
+	logger     *slog.Logger
+	progressFn ProgressFunc
 }
 
 func NewOrchestrator(
@@ -30,13 +37,22 @@ func NewOrchestrator(
 	reporter *ReporterTool,
 	logger *slog.Logger,
 	cfg *config.Config,
+	progressFn ProgressFunc,
 ) *Orchestrator {
 	return &Orchestrator{
-		discovery: discovery,
-		analyzer:  analyzer,
-		reporter:  reporter,
-		cfg:       cfg,
-		logger:    logger,
+		discovery:  discovery,
+		analyzer:   analyzer,
+		reporter:   reporter,
+		cfg:        cfg,
+		logger:     logger,
+		progressFn: progressFn,
+	}
+}
+
+// progress emits a progress message if a callback is registered.
+func (o *Orchestrator) progress(phase, msg string) {
+	if o.progressFn != nil {
+		o.progressFn(phase, msg)
 	}
 }
 
@@ -62,19 +78,40 @@ func (r *PipelineResult) String() string { return r.Summary }
 func (o *Orchestrator) RunFullPipeline(ctx context.Context) (*PipelineResult, error) {
 	start := time.Now()
 	o.logger.Info("starting full pipeline run")
+	o.progress("pipeline", "🚀 Pipeline started — discovering new contracts…")
 
 	result := &PipelineResult{}
 
 	o.logger.Info("pipeline phase 1: discovery")
+	o.progress("discovery", "📡 Phase 1/3 — Polling Sourcify for newly verified contracts…")
+
 	discoverResult, err := o.discovery.Discover(ctx)
 	if err != nil {
 		o.logger.Error("discovery phase failed", "error", err)
+		o.progress("discovery", fmt.Sprintf("⚠️  Discovery encountered an error: %v", err))
 	}
 	result.Discovery = discoverResult
+
+	if discoverResult != nil {
+		chainSummaries := make([]string, 0, len(discoverResult.ChainResults))
+		for _, cr := range discoverResult.ChainResults {
+			chainSummaries = append(chainSummaries,
+				fmt.Sprintf("%s: %d new", cr.ChainName, len(cr.NewContracts)))
+		}
+		o.progress("discovery", fmt.Sprintf(
+			"✅ Discovery complete — %d new contracts found, %d checked, %d already seen (%s) [%s]",
+			discoverResult.TotalNew,
+			discoverResult.TotalChecked,
+			discoverResult.TotalAlreadySeen,
+			strings.Join(chainSummaries, ", "),
+			discoverResult.Duration.Round(time.Millisecond),
+		))
+	}
 
 	if ctx.Err() != nil {
 		result.Duration = time.Since(start)
 		result.Summary = "Pipeline interrupted during discovery phase."
+		o.progress("pipeline", "✖ Pipeline interrupted during discovery.")
 		return result, ctx.Err()
 	}
 
@@ -82,18 +119,47 @@ func (o *Orchestrator) RunFullPipeline(ctx context.Context) (*PipelineResult, er
 	pending, err := o.analyzer.PendingContracts(ctx)
 	if err != nil {
 		o.logger.Error("failed to list pending contracts", "error", err)
+		o.progress("analysis", fmt.Sprintf("⚠️  Failed to list pending contracts: %v", err))
 	}
 
-	for _, c := range pending {
+	if len(pending) == 0 {
+		o.progress("analysis", "📋 Phase 2/3 — No pending contracts to analyze.")
+	} else {
+		o.progress("analysis", fmt.Sprintf(
+			"🔍 Phase 2/3 — Analyzing %d pending contract(s) for critical fund-theft vulnerabilities…",
+			len(pending),
+		))
+	}
+
+	for i, c := range pending {
 		if ctx.Err() != nil {
+			o.progress("analysis", fmt.Sprintf("✖ Pipeline interrupted after analyzing %d/%d contracts.", i, len(pending)))
 			break
 		}
 
+		contractLabel := c.Address
+		if c.Name != "" {
+			contractLabel = fmt.Sprintf("%s (%s)", c.Name, c.Address)
+		}
+		chainName := o.cfg.ChainName(c.ChainID)
+
+		o.progress("analysis", fmt.Sprintf(
+			"🔬 [%d/%d] Analyzing %s on %s…",
+			i+1, len(pending), contractLabel, chainName,
+		))
+
+		analysisStart := time.Now()
 		ar, err := o.analyzer.Analyze(ctx, c.ChainID, c.Address)
+		analysisDur := time.Since(analysisStart).Round(time.Millisecond)
+
 		if err != nil {
 			o.logger.Error("analysis failed",
 				"chain_id", c.ChainID, "address", c.Address, "error", err,
 			)
+			o.progress("analysis", fmt.Sprintf(
+				"❌ [%d/%d] Analysis FAILED for %s: %v [%s]",
+				i+1, len(pending), contractLabel, err, analysisDur,
+			))
 		}
 		result.Analyses = append(result.Analyses, ar)
 
@@ -101,20 +167,41 @@ func (o *Orchestrator) RunFullPipeline(ctx context.Context) (*PipelineResult, er
 			continue
 		}
 
-		reports := o.reportActionableFindings(ctx, ar)
+		// Report analysis result.
+		if ar.CriticalCount > 0 {
+			o.progress("analysis", fmt.Sprintf(
+				"🚨 [%d/%d] %s — found %d CRITICAL fund-theft vulnerability(ies)! [%s]",
+				i+1, len(pending), contractLabel, ar.CriticalCount, analysisDur,
+			))
+		} else {
+			o.progress("analysis", fmt.Sprintf(
+				"✅ [%d/%d] %s — no critical vulnerabilities [%s]",
+				i+1, len(pending), contractLabel, analysisDur,
+			))
+		}
+
+		// Generate reports for actionable findings immediately.
+		reports := o.reportActionableFindings(ctx, ar, i+1, len(pending), contractLabel)
 		result.Reports = append(result.Reports, reports...)
 	}
 
-	// Sweep: generate reports for any previously unreported actionable findings
-	// (e.g. from interrupted earlier runs or manual analyze_contract calls).
 	if ctx.Err() == nil {
+		o.progress("report", "🧹 Phase 3/3 — Checking for unreported critical findings from previous runs…")
+
 		orphaned, err := o.reporter.GenerateAllPending(ctx)
 		if err != nil {
 			o.logger.Error("failed to generate reports for orphaned findings", "error", err)
+			o.progress("report", fmt.Sprintf("⚠️  Failed to sweep orphaned findings: %v", err))
 		}
 		if len(orphaned) > 0 {
 			o.logger.Info("generated reports for previously unreported findings", "count", len(orphaned))
+			o.progress("report", fmt.Sprintf(
+				"📝 Generated %d report(s) for previously unreported findings.",
+				len(orphaned),
+			))
 			result.Reports = append(result.Reports, orphaned...)
+		} else {
+			o.progress("report", "✅ No orphaned findings — all critical findings have reports.")
 		}
 	}
 
@@ -128,33 +215,173 @@ func (o *Orchestrator) RunFullPipeline(ctx context.Context) (*PipelineResult, er
 		"reports", len(result.Reports),
 	)
 
+	totalCritical := 0
+	for _, ar := range result.Analyses {
+		totalCritical += ar.CriticalCount
+	}
+	o.progress("pipeline", fmt.Sprintf(
+		"🏁 Pipeline complete — %d contracts discovered, %d analyzed, %d critical findings, %d reports generated [%s]",
+		countNewContracts(result.Discovery),
+		len(result.Analyses),
+		totalCritical,
+		len(result.Reports),
+		result.Duration.Round(time.Millisecond),
+	))
+
 	return result, nil
 }
 
 // RunDiscovery executes only the discovery phase.
 func (o *Orchestrator) RunDiscovery(ctx context.Context) (*DiscoverResult, error) {
 	o.logger.Info("running discovery phase only")
-	return o.discovery.Discover(ctx)
+	o.progress("discovery", "📡 Polling Sourcify for newly verified contracts…")
+
+	start := time.Now()
+	result, err := o.discovery.Discover(ctx)
+	dur := time.Since(start).Round(time.Millisecond)
+
+	if err != nil {
+		o.progress("discovery", fmt.Sprintf("⚠️  Discovery encountered an error: %v [%s]", err, dur))
+		return result, err
+	}
+
+	if result != nil {
+		chainSummaries := make([]string, 0, len(result.ChainResults))
+		for _, cr := range result.ChainResults {
+			chainSummaries = append(chainSummaries,
+				fmt.Sprintf("%s: %d new", cr.ChainName, len(cr.NewContracts)))
+		}
+		o.progress("discovery", fmt.Sprintf(
+			"✅ Discovery complete — %d new contracts found, %d checked (%s) [%s]",
+			result.TotalNew, result.TotalChecked,
+			strings.Join(chainSummaries, ", "), dur,
+		))
+	}
+
+	return result, nil
 }
 
 // RunAnalysis executes only the analysis phase on all pending contracts.
 func (o *Orchestrator) RunAnalysis(ctx context.Context) ([]*AnalyzeResult, error) {
 	o.logger.Info("running analysis phase only")
-	return o.analyzer.AnalyzePending(ctx)
+
+	pending, err := o.analyzer.PendingContracts(ctx)
+	if err != nil {
+		o.progress("analysis", fmt.Sprintf("⚠️  Failed to list pending contracts: %v", err))
+		return nil, fmt.Errorf("listing pending contracts: %w", err)
+	}
+
+	if len(pending) == 0 {
+		o.progress("analysis", "📋 No pending contracts to analyze.")
+		return nil, nil
+	}
+
+	o.progress("analysis", fmt.Sprintf(
+		"🔍 Analyzing %d pending contract(s) for critical fund-theft vulnerabilities…",
+		len(pending),
+	))
+
+	var results []*AnalyzeResult
+	for i, c := range pending {
+		if ctx.Err() != nil {
+			o.progress("analysis", fmt.Sprintf("✖ Analysis interrupted after %d/%d contracts.", i, len(pending)))
+			break
+		}
+
+		contractLabel := c.Address
+		if c.Name != "" {
+			contractLabel = fmt.Sprintf("%s (%s)", c.Name, c.Address)
+		}
+		chainName := o.cfg.ChainName(c.ChainID)
+
+		o.progress("analysis", fmt.Sprintf(
+			"🔬 [%d/%d] Analyzing %s on %s…",
+			i+1, len(pending), contractLabel, chainName,
+		))
+
+		analysisStart := time.Now()
+		ar, err := o.analyzer.Analyze(ctx, c.ChainID, c.Address)
+		analysisDur := time.Since(analysisStart).Round(time.Millisecond)
+
+		if err != nil {
+			o.logger.Error("analysis failed",
+				"chain_id", c.ChainID, "address", c.Address, "error", err,
+			)
+			o.progress("analysis", fmt.Sprintf(
+				"❌ [%d/%d] Analysis FAILED for %s: %v [%s]",
+				i+1, len(pending), contractLabel, err, analysisDur,
+			))
+		} else if ar.CriticalCount > 0 {
+			o.progress("analysis", fmt.Sprintf(
+				"🚨 [%d/%d] %s — found %d CRITICAL fund-theft vulnerability(ies)! [%s]",
+				i+1, len(pending), contractLabel, ar.CriticalCount, analysisDur,
+			))
+		} else {
+			o.progress("analysis", fmt.Sprintf(
+				"✅ [%d/%d] %s — no critical vulnerabilities [%s]",
+				i+1, len(pending), contractLabel, analysisDur,
+			))
+		}
+
+		results = append(results, ar)
+	}
+
+	totalCritical := 0
+	for _, ar := range results {
+		totalCritical += ar.CriticalCount
+	}
+	o.progress("analysis", fmt.Sprintf(
+		"🏁 Analysis phase complete — %d contracts analyzed, %d critical findings.",
+		len(results), totalCritical,
+	))
+
+	return results, nil
 }
 
 // RunReporting generates reports for all unreported actionable findings.
 func (o *Orchestrator) RunReporting(ctx context.Context) ([]*ReportResult, error) {
 	o.logger.Info("running reporting phase only")
-	return o.reporter.GenerateAllPending(ctx)
+	o.progress("report", "📝 Generating reports for unreported critical findings…")
+
+	start := time.Now()
+	results, err := o.reporter.GenerateAllPending(ctx)
+	dur := time.Since(start).Round(time.Millisecond)
+
+	if err != nil {
+		o.progress("report", fmt.Sprintf("⚠️  Report generation encountered an error: %v [%s]", err, dur))
+		return results, err
+	}
+
+	succeeded := 0
+	failed := 0
+	for _, rr := range results {
+		if rr.Error != "" {
+			failed++
+		} else {
+			succeeded++
+		}
+	}
+
+	if len(results) == 0 {
+		o.progress("report", fmt.Sprintf("✅ No unreported critical findings — nothing to generate. [%s]", dur))
+	} else {
+		o.progress("report", fmt.Sprintf(
+			"🏁 Report generation complete — %d succeeded, %d failed [%s]",
+			succeeded, failed, dur,
+		))
+	}
+
+	return results, nil
 }
 
 // ProcessContract runs discover → analyze → report for a single contract.
 func (o *Orchestrator) ProcessContract(ctx context.Context, chainID uint64, address string) (*PipelineResult, error) {
 	start := time.Now()
 	address = normalizeAddress(address)
+	chainName := o.cfg.ChainName(chainID)
 
 	o.logger.Info("processing single contract", "chain_id", chainID, "address", address)
+	o.progress("discovery", fmt.Sprintf("📡 Fetching contract %s on %s from Sourcify…", address, chainName))
 
 	result := &PipelineResult{}
 
@@ -162,23 +389,48 @@ func (o *Orchestrator) ProcessContract(ctx context.Context, chainID uint64, addr
 	if err != nil {
 		result.Duration = time.Since(start)
 		result.Summary = fmt.Sprintf("Failed to discover contract %s on chain %d: %v", address, chainID, err)
+		o.progress("discovery", fmt.Sprintf("❌ Failed to fetch contract %s: %v", address, err))
 		return result, err
+	}
+
+	contractLabel := address
+	if contract.Name != "" {
+		contractLabel = fmt.Sprintf("%s (%s)", contract.Name, address)
 	}
 
 	o.logger.Info("contract discovered/retrieved",
 		"chain_id", chainID, "address", address,
 		"name", contract.Name, "status", contract.Status,
 	)
+	o.progress("discovery", fmt.Sprintf("✅ Contract found: %s — %d source file(s)", contractLabel, contract.SourceCount))
+	o.progress("analysis", fmt.Sprintf("🔬 Analyzing %s on %s for critical fund-theft vulnerabilities…", contractLabel, chainName))
 
+	analysisStart := time.Now()
 	analysisResult, err := o.analyzer.Analyze(ctx, chainID, address)
+	analysisDur := time.Since(analysisStart).Round(time.Millisecond)
+
 	if err != nil {
 		result.Analyses = []*AnalyzeResult{analysisResult}
 		result.Duration = time.Since(start)
 		result.Summary = fmt.Sprintf("Analysis failed for %s on chain %d: %v", address, chainID, err)
+		o.progress("analysis", fmt.Sprintf("❌ Analysis FAILED for %s: %v [%s]", contractLabel, err, analysisDur))
 		return result, err
 	}
 	result.Analyses = []*AnalyzeResult{analysisResult}
-	result.Reports = o.reportActionableFindings(ctx, analysisResult)
+
+	if analysisResult.CriticalCount > 0 {
+		o.progress("analysis", fmt.Sprintf(
+			"🚨 Analysis complete for %s — found %d CRITICAL fund-theft vulnerability(ies)! [%s]",
+			contractLabel, analysisResult.CriticalCount, analysisDur,
+		))
+	} else {
+		o.progress("analysis", fmt.Sprintf(
+			"✅ Analysis complete for %s — no critical vulnerabilities [%s]",
+			contractLabel, analysisDur,
+		))
+	}
+
+	result.Reports = o.reportActionableFindings(ctx, analysisResult, 1, 1, contractLabel)
 
 	result.Duration = time.Since(start)
 	result.Summary = o.buildSingleContractSummary(chainID, address, analysisResult, result.Reports)
@@ -190,19 +442,74 @@ func (o *Orchestrator) ProcessContract(ctx context.Context, chainID uint64, addr
 		"reports", len(result.Reports),
 	)
 
+	o.progress("pipeline", fmt.Sprintf(
+		"🏁 Done processing %s — %d findings, %d reports [%s]",
+		contractLabel, analysisResult.TotalFindings, len(result.Reports),
+		result.Duration.Round(time.Millisecond),
+	))
+
 	return result, nil
 }
 
 // ReAnalyzeContract forces a re-analysis of a previously analyzed contract.
 func (o *Orchestrator) ReAnalyzeContract(ctx context.Context, chainID uint64, address string) (*AnalyzeResult, error) {
+	address = normalizeAddress(address)
+	chainName := o.cfg.ChainName(chainID)
 	o.logger.Info("re-analyzing contract", "chain_id", chainID, "address", address)
-	return o.analyzer.ReAnalyze(ctx, chainID, address)
+	o.progress("analysis", fmt.Sprintf("🔄 Re-analyzing %s on %s — resetting status and running fresh analysis…", address, chainName))
+
+	start := time.Now()
+	result, err := o.analyzer.ReAnalyze(ctx, chainID, address)
+	dur := time.Since(start).Round(time.Millisecond)
+
+	if err != nil {
+		o.progress("analysis", fmt.Sprintf("❌ Re-analysis FAILED for %s: %v [%s]", address, err, dur))
+		return result, err
+	}
+
+	if result.CriticalCount > 0 {
+		o.progress("analysis", fmt.Sprintf(
+			"🚨 Re-analysis of %s complete — found %d CRITICAL fund-theft vulnerability(ies)! [%s]",
+			address, result.CriticalCount, dur,
+		))
+	} else {
+		o.progress("analysis", fmt.Sprintf(
+			"✅ Re-analysis of %s complete — no critical vulnerabilities [%s]",
+			address, dur,
+		))
+	}
+
+	return result, err
 }
 
 // GenerateReport generates a report for a specific finding by ID.
 func (o *Orchestrator) GenerateReport(ctx context.Context, findingID string) (*ReportResult, error) {
 	o.logger.Info("generating report for finding", "finding_id", findingID)
-	return o.reporter.GenerateForFinding(ctx, findingID)
+	o.progress("report", fmt.Sprintf("📝 Generating bug bounty report for finding %s…", findingID))
+
+	start := time.Now()
+	result, err := o.reporter.GenerateForFinding(ctx, findingID)
+	dur := time.Since(start).Round(time.Millisecond)
+
+	if err != nil {
+		o.progress("report", fmt.Sprintf("❌ Report generation FAILED for %s: %v [%s]", findingID, err, dur))
+		return result, err
+	}
+
+	if result.Error != "" {
+		o.progress("report", fmt.Sprintf("⚠️  Report for %s completed with error: %s [%s]", findingID, result.Error, dur))
+	} else {
+		savedTo := ""
+		if result.ReportPath != "" {
+			savedTo = fmt.Sprintf(" → saved to %s", result.ReportPath)
+		}
+		o.progress("report", fmt.Sprintf(
+			"✅ Report generated for [%s] \"%s\" (PoC: %v, Fix: %v)%s [%s]",
+			result.Severity, result.Title, result.HasPoC, result.HasFix, savedTo, dur,
+		))
+	}
+
+	return result, nil
 }
 
 // DisplayReport retrieves and returns the full Markdown content of a previously
@@ -228,7 +535,21 @@ func (o *Orchestrator) ListContracts(ctx context.Context, filter store.ContractF
 // GeneratePoC generates only the proof-of-concept code for a finding.
 func (o *Orchestrator) GeneratePoC(ctx context.Context, findingID string) (string, error) {
 	o.logger.Info("generating PoC for finding", "finding_id", findingID)
-	return o.reporter.GeneratePoCOnly(ctx, findingID)
+	o.progress("report", fmt.Sprintf("🧪 Generating Foundry PoC exploit for finding %s…", findingID))
+
+	start := time.Now()
+	poc, err := o.reporter.GeneratePoCOnly(ctx, findingID)
+	dur := time.Since(start).Round(time.Millisecond)
+
+	if err != nil {
+		o.progress("report", fmt.Sprintf("❌ PoC generation FAILED for %s: %v [%s]", findingID, err, dur))
+		return poc, err
+	}
+
+	lines := strings.Count(poc, "\n") + 1
+	o.progress("report", fmt.Sprintf("✅ PoC generated for %s — %d lines of Solidity [%s]", findingID, lines, dur))
+
+	return poc, nil
 }
 
 // OrchestratorSystemPrompt returns the system instruction for the root ADK agent.
@@ -448,21 +769,53 @@ func (o *Orchestrator) buildSingleContractSummary(
 
 // reportActionableFindings generates reports for all Critical fund-theft findings
 // in the given analysis result, returning results as they complete.
-func (o *Orchestrator) reportActionableFindings(ctx context.Context, ar *AnalyzeResult) []*ReportResult {
-	var reports []*ReportResult
+// contractIdx/contractTotal and contractLabel are used for progress messages; pass
+// 1/1 and the label when processing a single contract.
+func (o *Orchestrator) reportActionableFindings(ctx context.Context, ar *AnalyzeResult, contractIdx, contractTotal int, contractLabel string) []*ReportResult {
+	// Collect actionable findings first so we can count them.
+	var actionable []analyzer.Finding
 	for _, f := range ar.Findings {
-		if !f.Severity.IsActionable() {
-			continue
+		if f.Severity.IsActionable() {
+			actionable = append(actionable, f)
 		}
+	}
+
+	if len(actionable) == 0 {
+		return nil
+	}
+
+	o.progress("report", fmt.Sprintf(
+		"📝 [%d/%d] Generating %d bug bounty report(s) for %s…",
+		contractIdx, contractTotal, len(actionable), contractLabel,
+	))
+
+	var reports []*ReportResult
+	for i, f := range actionable {
 		if ctx.Err() != nil {
+			o.progress("report", fmt.Sprintf(
+				"✖ Report generation interrupted after %d/%d reports for %s.",
+				i, len(actionable), contractLabel,
+			))
 			break
 		}
 
+		o.progress("report", fmt.Sprintf(
+			"📝 [%d/%d] Report %d/%d — generating PoC exploit for \"%s\"…",
+			contractIdx, contractTotal, i+1, len(actionable), f.Title,
+		))
+
+		reportStart := time.Now()
 		rr, err := o.reporter.GenerateForFinding(ctx, f.ID)
+		reportDur := time.Since(reportStart).Round(time.Millisecond)
+
 		if err != nil {
 			o.logger.Error("report generation failed",
 				"finding_id", f.ID, "error", err,
 			)
+			o.progress("report", fmt.Sprintf(
+				"❌ Report FAILED for \"%s\": %v [%s]",
+				f.Title, err, reportDur,
+			))
 			reports = append(reports, &ReportResult{
 				FindingID: f.ID,
 				ChainID:   ar.ChainID,
@@ -471,7 +824,18 @@ func (o *Orchestrator) reportActionableFindings(ctx context.Context, ar *Analyze
 			})
 			continue
 		}
+
 		reports = append(reports, rr)
+
+		savedTo := ""
+		if rr.ReportPath != "" {
+			savedTo = fmt.Sprintf(" → saved to %s", rr.ReportPath)
+		}
+		o.progress("report", fmt.Sprintf(
+			"✅ Report %d/%d done — [%s] \"%s\" (PoC: %v, Fix: %v)%s [%s]",
+			i+1, len(actionable), rr.Severity, rr.Title,
+			rr.HasPoC, rr.HasFix, savedTo, reportDur,
+		))
 	}
 	return reports
 }

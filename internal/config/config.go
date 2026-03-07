@@ -37,6 +37,9 @@ type Config struct {
 	SourcifyBaseURL string `yaml:"sourcify_base_url"`
 	// PollInterval is how often the discovery loop polls for new contracts.
 	PollInterval time.Duration `yaml:"poll_interval"`
+	// MaxSinglePassTokens is the token threshold above which the two-pass
+	// analysis strategy is used instead of sending all sources in one request.
+	MaxSinglePassTokens int `yaml:"max_single_pass_tokens"`
 
 	// Chains lists the blockchain networks BiM monitors.
 	Chains []Chain `yaml:"chains"`
@@ -45,12 +48,13 @@ type Config struct {
 // defaults returns a Config populated with sensible defaults.
 func defaults() Config {
 	return Config{
-		ModelName:       "gemini-2.5-pro",
-		LogLevel:        "info",
-		DataDir:         "./data",
-		DBPath:          "./data/bim.db",
-		SourcifyBaseURL: "https://sourcify.dev/server",
-		PollInterval:    60 * time.Second,
+		ModelName:           "gemini-2.5-pro",
+		LogLevel:            "info",
+		DataDir:             "./data",
+		DBPath:              "./data/bim.db",
+		SourcifyBaseURL:     "https://sourcify.dev/server",
+		PollInterval:        60 * time.Second,
+		MaxSinglePassTokens: 200_000,
 		Chains: []Chain{
 			{ID: 1, Name: "Ethereum Mainnet", RPCURL: "https://eth.llamarpc.com"},
 			{ID: 8453, Name: "Base", RPCURL: "https://mainnet.base.org"},

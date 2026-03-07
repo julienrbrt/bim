@@ -112,6 +112,3 @@ func EstimateTokenCount(sources map[string]string) int {
 	}
 	return total / 4
 }
-
-// MaxSinglePassTokens is the threshold above which the two-pass analysis strategy is used.
-const MaxSinglePassTokens = 100_000

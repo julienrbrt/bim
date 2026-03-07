@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +55,13 @@ type agentDoneMsg struct{ err error }
 type agentToolCallMsg struct{ tool string }
 type agentToolResultMsg struct{ tool string }
 type agentStatusMsg struct{ text string }
+
+// PipelineProgressMsg is sent by the orchestrator's progress callback to
+// display live pipeline status in the chat tab.
+type PipelineProgressMsg struct {
+	Phase   string
+	Message string
+}
 type clearCtrlCMsg struct{}
 
 const (
@@ -81,19 +87,6 @@ func prettyToolName(name string) string {
 		return pretty
 	}
 	return name
-}
-
-// toolTriggersBell reports whether a completed tool invocation should ring the
-// terminal bell (i.e. a report was just written).
-func toolTriggersBell(name string) bool {
-	return name == "generate_report" || name == "run_pipeline"
-}
-
-// bell writes a BEL character to stderr so the terminal emits a notification
-// sound. Stderr is used because bubbletea owns stdout for rendering.
-func bell() tea.Msg {
-	_, _ = os.Stderr.Write([]byte("\a"))
-	return nil
 }
 
 // Config holds the TUI dependencies.
@@ -289,9 +282,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agentStatus = prettyToolName(msg.tool) + " done, processing…"
 		m.chatLines = append(m.chatLines, fmt.Sprintf("  ✔ %s complete", prettyToolName(msg.tool)))
 		m.syncChatViewport()
-		if toolTriggersBell(msg.tool) {
-			return m, bell
-		}
+		return m, nil
+
+	case PipelineProgressMsg:
+		m.agentStatus = msg.Message
+		m.chatLines = append(m.chatLines, "  📊 "+msg.Message)
+		m.syncChatViewport()
 		return m, nil
 
 	case agentStatusMsg:
@@ -519,6 +515,22 @@ func statusStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Faint(true).Foreground(lipgloss.ANSIColor(3)) // yellow
 }
 
+func pipelineProgressStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Faint(true).Foreground(lipgloss.ANSIColor(4)) // blue
+}
+
+func pipelineAlertStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(1)) // bold red
+}
+
+func pipelineSuccessStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Faint(true).Foreground(lipgloss.ANSIColor(2)) // green
+}
+
+func pipelineErrorStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(1)) // red
+}
+
 func styleChatLine(line string) string {
 	switch {
 	case strings.HasPrefix(line, "You: "):
@@ -535,6 +547,18 @@ func styleChatLine(line string) string {
 		return toolResultStyle().Render(line)
 	case strings.HasPrefix(line, "  ⏳ "):
 		return statusStyle().Render(line)
+	case strings.HasPrefix(line, "  📊 "):
+		content := line[len("  📊 "):]
+		switch {
+		case strings.Contains(content, "🚨"):
+			return pipelineAlertStyle().Render(line)
+		case strings.Contains(content, "❌"), strings.Contains(content, "⚠️"), strings.Contains(content, "FAILED"):
+			return pipelineErrorStyle().Render(line)
+		case strings.Contains(content, "✅"), strings.Contains(content, "🏁"):
+			return pipelineSuccessStyle().Render(line)
+		default:
+			return pipelineProgressStyle().Render(line)
+		}
 	default:
 		return dimStyle().Render(line)
 	}

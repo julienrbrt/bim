@@ -114,7 +114,9 @@ func main() {
 	discoveryTool := agentpkg.NewDiscoveryTool(sourcifyClient, st, contractSource, logger, cfg)
 	analyzerTool := agentpkg.NewAnalyzerTool(az, sourcifyClient, st, logger, cfg)
 	reporterTool := agentpkg.NewReporterTool(rep, sourcifyClient, st, logger, cfg)
-	orch := agentpkg.NewOrchestrator(discoveryTool, analyzerTool, reporterTool, logger, cfg)
+	orch := agentpkg.NewOrchestrator(discoveryTool, analyzerTool, reporterTool, logger, cfg, func(phase, message string) {
+		ref.Send(tui.PipelineProgressMsg{Phase: phase, Message: message})
+	})
 
 	tools, err := buildTools(orch, discoveryTool, logger)
 	if err != nil {

@@ -78,13 +78,13 @@ func (a *Analyzer) Analyze(ctx context.Context, input AnalysisInput) (*AnalysisR
 	a.logger.Info("estimated token count",
 		"analysis_id", analysisID,
 		"tokens", tokenEstimate,
-		"max_single_pass", MaxSinglePassTokens,
+		"max_single_pass", a.cfg.MaxSinglePassTokens,
 	)
 
 	var findings []Finding
 	var err error
 
-	if tokenEstimate > MaxSinglePassTokens {
+	if tokenEstimate > a.cfg.MaxSinglePassTokens {
 		a.logger.Info("using two-pass analysis strategy (large contract)", "analysis_id", analysisID)
 		findings, err = a.analyzeTwoPass(ctx, input)
 	} else {
