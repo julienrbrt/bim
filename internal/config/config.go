@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -41,6 +42,12 @@ type Config struct {
 	// analysis strategy is used instead of sending all sources in one request.
 	MaxSinglePassTokens int `yaml:"max_single_pass_tokens"`
 
+	// SkippedContracts is a list of contract name substrings (case-insensitive)
+	// that should be skipped during analysis. Contracts whose short name or
+	// fully-qualified name contains any of these substrings are marked as
+	// skipped without being sent to the LLM.
+	SkippedContracts []string `yaml:"skipped_contracts"`
+
 	// Chains lists the blockchain networks BiM monitors.
 	Chains []Chain `yaml:"chains"`
 }
@@ -55,6 +62,120 @@ func defaults() Config {
 		SourcifyBaseURL:     "https://sourcify.dev/server",
 		PollInterval:        60 * time.Second,
 		MaxSinglePassTokens: 200_000,
+		SkippedContracts: []string{
+			// Interfaces — no executable code at all.
+			"IAccessControl",
+			"IAccessControlEnumerable",
+			"IAccessControlDefaultAdminRules",
+			"IAccessManaged",
+			"IAccessManager",
+			"IAuthority",
+			"IGovernor",
+			"IVotes",
+			"IBeacon",
+			"IERC20",
+			"IERC20Metadata",
+			"IERC20Permit",
+			"IERC721",
+			"IERC721Receiver",
+			"IERC721Enumerable",
+			"IERC721Metadata",
+			"IERC1155",
+			"IERC1155Receiver",
+			"IERC1155MetadataURI",
+			"IERC165",
+
+			// Pure stateless libraries — no storage, no funds, no access logic.
+			// utils/
+			"Address",
+			"Arrays",
+			"Base58",
+			"Base64",
+			"Blockhash",
+			"Bytes",
+			"CAIP2",
+			"CAIP10",
+			"Calldata",
+			"Comparators",
+			"Context",
+			"Create2",
+			"Errors",
+			"LowLevelCall",
+			"Memory",
+			"Nonces",
+			"NoncesKeyed",
+			"Packing",
+			"Panic",
+			"RelayedCall",
+			"RLP",
+			"ShortStrings",
+			"SimulateCall",
+			"SlotDerivation",
+			"StorageSlot",
+			"Strings",
+			"TransientSlot",
+			// utils/cryptography
+			"ECDSA",
+			"EIP712",
+			"Hashes",
+			"MerkleProof",
+			"MessageHashUtils",
+			"P256",
+			"RSA",
+			"SignatureChecker",
+			"TrieProof",
+			"WebAuthn",
+			"ERC7739Utils",
+			// utils/cryptography/signers
+			"AbstractSigner",
+			"ERC7739",
+			"MultiSignerERC7913",
+			"MultiSignerERC7913Weighted",
+			"SignerECDSA",
+			"SignerEIP7702",
+			"SignerERC7913",
+			"SignerP256",
+			"SignerRSA",
+			"SignerWebAuthn",
+			// utils/cryptography/verifiers
+			"ERC7913P256Verifier",
+			"ERC7913RSAVerifier",
+			"ERC7913WebAuthnVerifier",
+			// utils/introspection
+			"ERC165",
+			"ERC165Checker",
+			// utils/math
+			"Math",
+			"SafeCast",
+			"SignedMath",
+			// utils/structs
+			"Accumulators",
+			"BitMaps",
+			"Checkpoints",
+			"CircularBuffer",
+			"DoubleEndedQueue",
+			"EnumerableMap",
+			"EnumerableSet",
+			"Heap",
+			"MerkleTree",
+			// utils/types
+			"Time",
+			// token utils (stateless helpers)
+			"SafeERC20",
+			"ERC1363Utils",
+			"ERC721Utils",
+			"ERC721Holder",
+			"ERC1155Utils",
+			"ERC1155Holder",
+			"AuthorityUtils",
+			"ERC4337Utils",
+			"ERC7579Utils",
+			"EIP7702Utils",
+			"ERC165Checker",
+			"Multicall",
+			"Clones",
+			"ERC1967Utils",
+		},
 		Chains: []Chain{
 			{ID: 1, Name: "Ethereum Mainnet", RPCURL: "https://eth.llamarpc.com"},
 			{ID: 8453, Name: "Base", RPCURL: "https://mainnet.base.org"},
@@ -111,6 +232,28 @@ func (c *Config) validate() error {
 		return fmt.Errorf("poll_interval must be at least 1s, got %s", c.PollInterval)
 	}
 	return nil
+}
+
+// IsContractSkipped reports whether the given fully-qualified contract name
+// matches any entry in the SkippedContracts list. Matching is case-insensitive
+// and checks both the full string and the short name after the last ':'.
+func (c *Config) IsContractSkipped(fullyQualifiedName string) (bool, string) {
+	// Extract the short name: "contracts/Token.sol:MyToken" → "MyToken".
+	short := fullyQualifiedName
+	if idx := strings.LastIndex(fullyQualifiedName, ":"); idx >= 0 {
+		short = fullyQualifiedName[idx+1:]
+	}
+
+	nameLower := strings.ToLower(fullyQualifiedName)
+	shortLower := strings.ToLower(short)
+
+	for _, entry := range c.SkippedContracts {
+		entryLower := strings.ToLower(entry)
+		if strings.Contains(nameLower, entryLower) || strings.Contains(shortLower, entryLower) {
+			return true, entry
+		}
+	}
+	return false, ""
 }
 
 // ChainIDs returns the list of configured chain IDs.

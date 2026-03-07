@@ -113,6 +113,27 @@ func (t *AnalyzerTool) Analyze(ctx context.Context, chainID uint64, address stri
 		contractName = contract.Compilation.FullyQualifiedName
 	}
 
+	if skipped, matchedEntry := t.cfg.IsContractSkipped(contractName); skipped {
+		t.logger.Info("skipping whitelisted contract",
+			"chain_id", chainID,
+			"address", address,
+			"contract", contractName,
+			"matched_entry", matchedEntry,
+		)
+		skipMsg := fmt.Sprintf("contract matches skipped entry %q", matchedEntry)
+		if err := t.store.UpdateContractStatus(ctx, chainID, address, store.StatusSkipped, skipMsg); err != nil {
+			t.logger.Warn("failed to mark contract as skipped",
+				"chain_id", chainID,
+				"address", address,
+				"error", err,
+			)
+		}
+		result.ContractName = contractName
+		result.Language = language
+		result.Summary = fmt.Sprintf("Contract %s skipped: matches whitelist entry %q.", contractName, matchedEntry)
+		return result, nil
+	}
+
 	input := analyzer.AnalysisInput{
 		ChainID:         chainID,
 		Address:         address,
