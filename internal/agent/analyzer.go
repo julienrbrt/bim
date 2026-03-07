@@ -124,7 +124,12 @@ func (t *AnalyzerTool) Analyze(ctx context.Context, chainID uint64, address stri
 		contractName = contract.Compilation.FullyQualifiedName
 	}
 
-	if skipped, matchedEntry := t.cfg.IsContractSkipped(contractName); skipped {
+	sourcePaths := make([]string, 0, len(sources))
+	for path := range sources {
+		sourcePaths = append(sourcePaths, path)
+	}
+
+	if skipped, matchedEntry := t.cfg.IsContractSkipped(contractName, sourcePaths...); skipped {
 		t.logger.Info("skipping whitelisted contract",
 			"chain_id", chainID,
 			"address", address,

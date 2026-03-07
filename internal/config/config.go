@@ -63,123 +63,13 @@ func defaults() Config {
 		PollInterval:        60 * time.Second,
 		MaxSinglePassTokens: 200_000,
 		SkippedContracts: []string{
-			// Interfaces — no executable code at all.
-			"IAccessControl",
-			"IAccessControlEnumerable",
-			"IAccessControlDefaultAdminRules",
-			"IAccessManaged",
-			"IAccessManager",
-			"IAuthority",
-			"IGovernor",
-			"IVotes",
-			"IBeacon",
-			"IERC20",
-			"IERC20Metadata",
-			"IERC20Permit",
-			"IERC721",
-			"IERC721Receiver",
-			"IERC721Enumerable",
-			"IERC721Metadata",
-			"IERC1155",
-			"IERC1155Receiver",
-			"IERC1155MetadataURI",
-			"IERC165",
-
-			// Pure stateless libraries — no storage, no funds, no access logic.
-			// utils/
-			"Address",
-			"Arrays",
-			"Base58",
-			"Base64",
-			"Blockhash",
-			"Bytes",
-			"CAIP2",
-			"CAIP10",
-			"Calldata",
-			"Comparators",
-			"Context",
-			"Create2",
-			"Errors",
-			"LowLevelCall",
-			"Memory",
-			"Nonces",
-			"NoncesKeyed",
-			"Packing",
-			"Panic",
-			"RelayedCall",
-			"RLP",
-			"ShortStrings",
-			"SimulateCall",
-			"SlotDerivation",
-			"StorageSlot",
-			"Strings",
-			"TransientSlot",
-			// utils/cryptography
-			"ECDSA",
-			"EIP712",
-			"Hashes",
-			"MerkleProof",
-			"MessageHashUtils",
-			"P256",
-			"RSA",
-			"SignatureChecker",
-			"TrieProof",
-			"WebAuthn",
-			"ERC7739Utils",
-			// utils/cryptography/signers
-			"AbstractSigner",
-			"ERC7739",
-			"MultiSignerERC7913",
-			"MultiSignerERC7913Weighted",
-			"SignerECDSA",
-			"SignerEIP7702",
-			"SignerERC7913",
-			"SignerP256",
-			"SignerRSA",
-			"SignerWebAuthn",
-			// utils/cryptography/verifiers
-			"ERC7913P256Verifier",
-			"ERC7913RSAVerifier",
-			"ERC7913WebAuthnVerifier",
-			// utils/introspection
-			"ERC165",
-			"ERC165Checker",
-			// utils/math
-			"Math",
-			"SafeCast",
-			"SignedMath",
-			// utils/structs
-			"Accumulators",
-			"BitMaps",
-			"Checkpoints",
-			"CircularBuffer",
-			"DoubleEndedQueue",
-			"EnumerableMap",
-			"EnumerableSet",
-			"Heap",
-			"MerkleTree",
-			// utils/types
-			"Time",
-			// token utils (stateless helpers)
-			"SafeERC20",
-			"ERC1363Utils",
-			"ERC721Utils",
-			"ERC721Holder",
-			"ERC1155Utils",
-			"ERC1155Holder",
-			"AuthorityUtils",
-			"ERC4337Utils",
-			"ERC7579Utils",
-			"EIP7702Utils",
-			"ERC165Checker",
-			"Multicall",
-			"Clones",
-			"ERC1967Utils",
-			// Common proxy / safe infrastructure — canonical, well-audited deployments.
-			"BeaconProxy",
+			// All OpenZeppelin contracts — matched against source file paths.
+			// A single entry covers every current and future OZ contract.
+			"@openzeppelin",
+			// Gnosis Safe infrastructure — canonical, well-audited deployments.
+			"GnosisSafe",
 			"SafeProxy",
 			"GnosisSafeProxy",
-			"GnosisSafe",
 			"MultiSend",
 			"MultiSendCallOnly",
 			"SafeL2",
@@ -187,7 +77,7 @@ func defaults() Config {
 			"TokenCallbackHandler",
 			"CreateCall",
 			"SignMessageLib",
-			// Canonical singleton infrastructure — never user-customised.
+			// Canonical singletons — never user-customised.
 			"EntryPoint",
 			"SenderCreator",
 			"Permit2",
@@ -269,10 +159,15 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// IsContractSkipped reports whether the given fully-qualified contract name
-// matches any entry in the SkippedContracts list. Matching is case-insensitive
-// and checks both the full string and the short name after the last ':'.
-func (c *Config) IsContractSkipped(fullyQualifiedName string) (bool, string) {
+// IsContractSkipped reports whether the given contract matches any entry in the
+// SkippedContracts list. Matching is case-insensitive and checked against:
+//   - the fully-qualified name (e.g. "contracts/Token.sol:MyToken")
+//   - the short name after the last ':' (e.g. "MyToken")
+//   - each source file path (e.g. "@openzeppelin/contracts/token/ERC20/ERC20.sol")
+//
+// This last check allows a single entry like "@openzeppelin" to skip any
+// contract whose sources live entirely under that path prefix.
+func (c *Config) IsContractSkipped(fullyQualifiedName string, sourcePaths ...string) (bool, string) {
 	// Extract the short name: "contracts/Token.sol:MyToken" → "MyToken".
 	short := fullyQualifiedName
 	if idx := strings.LastIndex(fullyQualifiedName, ":"); idx >= 0 {
@@ -286,6 +181,11 @@ func (c *Config) IsContractSkipped(fullyQualifiedName string) (bool, string) {
 		entryLower := strings.ToLower(entry)
 		if strings.Contains(nameLower, entryLower) || strings.Contains(shortLower, entryLower) {
 			return true, entry
+		}
+		for _, p := range sourcePaths {
+			if strings.Contains(strings.ToLower(p), entryLower) {
+				return true, entry
+			}
 		}
 	}
 	return false, ""
