@@ -61,6 +61,10 @@ func (s *testStore) GetFindingByID(_ context.Context, _ string) (*store.StoredFi
 func (s *testStore) GetActionableFindings(_ context.Context) ([]store.StoredFinding, error) {
 	return nil, nil
 }
+
+func (s *testStore) GetAllFindings(_ context.Context) ([]store.StoredFinding, error) {
+	return nil, nil
+}
 func (s *testStore) SaveReport(_ context.Context, _ *store.StoredReport) error { return nil }
 func (s *testStore) GetReportByFindingID(_ context.Context, _ string) (*store.StoredReport, error) {
 	return nil, nil

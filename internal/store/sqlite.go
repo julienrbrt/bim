@@ -264,6 +264,31 @@ func (s *SQLiteStore) GetActionableFindings(ctx context.Context) ([]StoredFindin
 	return findings, nil
 }
 
+// GetAllFindings retrieves all findings ordered by severity priority then creation date.
+func (s *SQLiteStore) GetAllFindings(ctx context.Context) ([]StoredFinding, error) {
+	var findings []StoredFinding
+	// Order by severity priority (Critical first) then newest first within each severity.
+	result := s.db.WithContext(ctx).
+		Order(`CASE severity
+			WHEN 'Critical'      THEN 1
+			WHEN 'High'          THEN 2
+			WHEN 'Medium'        THEN 3
+			WHEN 'Low'           THEN 4
+			WHEN 'Informational' THEN 5
+			ELSE 6
+		END, created_at DESC`).
+		Find(&findings)
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("querying all findings: %w", result.Error)
+	}
+
+	for i := range findings {
+		findings[i].syncFromFields()
+	}
+	return findings, nil
+}
+
 // SaveReport upserts a report and updates the corresponding finding's report_path.
 func (s *SQLiteStore) SaveReport(ctx context.Context, report *StoredReport) error {
 	now := time.Now().UTC()

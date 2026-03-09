@@ -197,6 +197,7 @@ type Store interface {
 	GetFindings(ctx context.Context, chainID uint64, address string) ([]StoredFinding, error)
 	GetFindingByID(ctx context.Context, id string) (*StoredFinding, error)
 	GetActionableFindings(ctx context.Context) ([]StoredFinding, error)
+	GetAllFindings(ctx context.Context) ([]StoredFinding, error)
 
 	SaveReport(ctx context.Context, report *StoredReport) error
 	GetReportByFindingID(ctx context.Context, findingID string) (*StoredReport, error)

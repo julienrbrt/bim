@@ -164,6 +164,7 @@ func main() {
 	// Fill in the fields that were not available at initial construction.
 	tuiModel.SetRunnerConfig(r, sessionID, userID)
 	tuiModel.SetLogSink(logSink)
+	tuiModel.SetStore(st)
 
 	p := tea.NewProgram(tuiModel)
 	ref.Set(p)

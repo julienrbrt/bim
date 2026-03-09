@@ -16,6 +16,8 @@ import (
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
+
+	"github.com/julienrbrt/bim/internal/store"
 )
 
 // progRef is a shared holder for the *tea.Program reference so that
@@ -62,11 +64,22 @@ type PipelineProgressMsg struct {
 	Phase   string
 	Message string
 }
+
+// findingsRefreshMsg is sent on a timer to reload findings from the store.
+type findingsRefreshMsg struct{}
+
+// FindingUpdatedMsg can be sent externally (e.g. by the reporter tool) to
+// trigger an immediate findings refresh after a new finding is persisted.
+type FindingUpdatedMsg struct{}
+
 type clearCtrlCMsg struct{}
 
 const (
 	tabChat = iota
 	tabLogs
+	tabFindings
+
+	findingsRefreshInterval = 10 * time.Second
 )
 
 // Pretty tool-name mapping.
@@ -95,6 +108,7 @@ type Config struct {
 	SessionID string
 	UserID    string
 	Ctx       context.Context
+	Store     store.Store
 }
 
 // Model is the top-level Bubbletea model for BiM.
@@ -103,12 +117,15 @@ type Model struct {
 
 	activeTab int
 
-	chatVP viewport.Model
-	logsVP viewport.Model
-	input  textinput.Model
+	chatVP     viewport.Model
+	logsVP     viewport.Model
+	findingsVP viewport.Model
+	input      textinput.Model
 
-	chatLines []string
-	logLines  []string
+	chatLines   []string
+	logLines    []string
+	findings    []store.StoredFinding
+	findingsErr string
 
 	agentBusy    bool
 	agentPartial string
@@ -117,8 +134,9 @@ type Model struct {
 
 	ctrlCPending bool // true after first Ctrl+C when agent is busy
 
-	chatAtBottom bool // true when the chat viewport is pinned to the bottom
-	logsAtBottom bool // true when the logs viewport is pinned to the bottom
+	chatAtBottom     bool // true when the chat viewport is pinned to the bottom
+	logsAtBottom     bool // true when the logs viewport is pinned to the bottom
+	findingsAtBottom bool // true when the findings viewport is pinned to the bottom
 
 	width  int
 	height int
@@ -138,16 +156,18 @@ func New(cfg Config) Model {
 	ti.CharLimit = 4096
 
 	return Model{
-		cfg:          cfg,
-		activeTab:    tabChat,
-		chatVP:       viewport.New(),
-		logsVP:       viewport.New(),
-		input:        ti,
-		chatLines:    []string{"Welcome to BiM. Type a message and press Enter."},
-		logLines:     []string{},
-		pref:         newProgRef(),
-		chatAtBottom: true,
-		logsAtBottom: true,
+		cfg:              cfg,
+		activeTab:        tabChat,
+		chatVP:           viewport.New(),
+		logsVP:           viewport.New(),
+		findingsVP:       viewport.New(),
+		input:            ti,
+		chatLines:        []string{"Welcome to BiM. Type a message and press Enter."},
+		logLines:         []string{},
+		pref:             newProgRef(),
+		chatAtBottom:     true,
+		logsAtBottom:     true,
+		findingsAtBottom: true,
 	}
 }
 
@@ -173,6 +193,11 @@ func (m *Model) SetLogSink(s *LogSink) {
 	m.logSink = s
 }
 
+// SetStore stores the Store for findings browsing.
+func (m *Model) SetStore(s store.Store) {
+	m.cfg.Store = s
+}
+
 // tea.Model interface.
 
 func (m Model) Init() tea.Cmd {
@@ -181,6 +206,10 @@ func (m Model) Init() tea.Cmd {
 		if flushCmd := m.logSink.FlushQueued(); flushCmd != nil {
 			cmds = append(cmds, flushCmd)
 		}
+	}
+	// Kick off an immediate findings load and the periodic refresh ticker.
+	if m.cfg.Store != nil {
+		cmds = append(cmds, m.loadFindingsCmd(), scheduleFindingsRefresh())
 	}
 	return tea.Batch(cmds...)
 }
@@ -224,7 +253,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Switch tabs
 		case msg.Code == tea.KeyTab && msg.Mod == 0:
-			m.activeTab = (m.activeTab + 1) % 2
+			m.activeTab = (m.activeTab + 1) % 3
 			return m, nil
 
 		// Submit prompt
@@ -247,8 +276,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.runAgent(text)
 		}
 
-		// Chat tab: textinput handles typing; otherwise forward to viewport.
-		if m.activeTab == tabChat {
+		// Tab-specific key routing.
+		switch m.activeTab {
+		case tabChat:
 			switch msg.Code {
 			case tea.KeyUp, tea.KeyPgUp:
 				m.chatAtBottom = false
@@ -265,7 +295,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input = ti
 				cmds = append(cmds, cmd)
 			}
-		} else {
+		case tabLogs:
 			switch msg.Code {
 			case tea.KeyUp, tea.KeyPgUp:
 				m.logsAtBottom = false
@@ -282,9 +312,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.logsVP = vp
 				cmds = append(cmds, cmd)
 			}
+		case tabFindings:
+			switch msg.Code {
+			case tea.KeyUp, tea.KeyPgUp:
+				m.findingsAtBottom = false
+				vp, cmd := m.findingsVP.Update(msg)
+				m.findingsVP = vp
+				cmds = append(cmds, cmd)
+			case tea.KeyDown, tea.KeyPgDown:
+				vp, cmd := m.findingsVP.Update(msg)
+				m.findingsVP = vp
+				cmds = append(cmds, cmd)
+				m.findingsAtBottom = m.findingsVP.AtBottom()
+			default:
+				vp, cmd := m.findingsVP.Update(msg)
+				m.findingsVP = vp
+				cmds = append(cmds, cmd)
+			}
 		}
 
 		return m, tea.Batch(cmds...)
+
+	case findingsRefreshMsg:
+		if m.cfg.Store != nil {
+			return m, tea.Batch(m.loadFindingsCmd(), scheduleFindingsRefresh())
+		}
+		return m, scheduleFindingsRefresh()
+
+	case FindingUpdatedMsg:
+		if m.cfg.Store != nil {
+			return m, m.loadFindingsCmd()
+		}
+		return m, nil
+
+	case findingsLoadedMsg:
+		m.findings = msg.findings
+		m.findingsErr = msg.err
+		m.syncFindingsViewport()
+		return m, nil
 
 	case logLineMsg:
 		m.logLines = append(m.logLines, msg.line)
@@ -339,30 +404,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Forward remaining messages (mouse, etc.) to sub-components.
-	if m.activeTab == tabChat {
+	// Forward remaining messages (mouse, etc.) to the active sub-component.
+	switch m.activeTab {
+	case tabChat:
 		vp, cmd := m.chatVP.Update(msg)
 		m.chatVP = vp
 		cmds = append(cmds, cmd)
-		// If the viewport moved (e.g. mouse wheel scroll), update the pin state.
-		if !m.chatVP.AtBottom() {
-			m.chatAtBottom = false
-		} else {
-			m.chatAtBottom = true
-		}
+		m.chatAtBottom = m.chatVP.AtBottom()
 		ti, cmd2 := m.input.Update(msg)
 		m.input = ti
 		cmds = append(cmds, cmd2)
-	} else {
+	case tabLogs:
 		vp, cmd := m.logsVP.Update(msg)
 		m.logsVP = vp
 		cmds = append(cmds, cmd)
-		// If the viewport moved (e.g. mouse wheel scroll), update the pin state.
-		if !m.logsVP.AtBottom() {
-			m.logsAtBottom = false
-		} else {
-			m.logsAtBottom = true
-		}
+		m.logsAtBottom = m.logsVP.AtBottom()
+	case tabFindings:
+		vp, cmd := m.findingsVP.Update(msg)
+		m.findingsVP = vp
+		cmds = append(cmds, cmd)
+		m.findingsAtBottom = m.findingsVP.AtBottom()
 	}
 
 	return m, tea.Batch(cmds...)
@@ -378,10 +439,13 @@ func (m Model) View() tea.View {
 	tabBar := m.renderTabBar()
 
 	var body string
-	if m.activeTab == tabChat {
+	switch m.activeTab {
+	case tabChat:
 		body = m.chatVP.View()
-	} else {
+	case tabLogs:
 		body = m.logsVP.View()
+	case tabFindings:
+		body = m.findingsVP.View()
 	}
 
 	var inputLine string
@@ -409,10 +473,13 @@ func (m *Model) recalcLayout() {
 	m.chatVP.SetHeight(vpHeight)
 	m.logsVP.SetWidth(m.width)
 	m.logsVP.SetHeight(vpHeight)
+	m.findingsVP.SetWidth(m.width)
+	m.findingsVP.SetHeight(vpHeight)
 	m.input.SetWidth(m.width)
 
 	m.syncChatViewport()
 	m.syncLogsViewport()
+	m.syncFindingsViewport()
 }
 
 func (m *Model) syncChatViewport() {
@@ -452,6 +519,144 @@ func (m *Model) syncLogsViewport() {
 	m.logsVP.SetContent(content)
 	if m.logsAtBottom {
 		m.logsVP.GotoBottom()
+	}
+}
+
+func (m *Model) syncFindingsViewport() {
+	content := renderFindings(m.findings, m.findingsErr, m.width)
+	m.findingsVP.SetContent(content)
+	if m.findingsAtBottom {
+		m.findingsVP.GotoBottom()
+	}
+}
+
+// loadFindingsCmd returns a Cmd that queries all findings from the store and
+// returns a findingsLoadedMsg.
+func (m *Model) loadFindingsCmd() tea.Cmd {
+	st := m.cfg.Store
+	ctx := m.cfg.Ctx
+	return func() tea.Msg {
+		findings, err := st.GetAllFindings(ctx)
+		if err != nil {
+			return findingsLoadedMsg{err: err.Error()}
+		}
+		return findingsLoadedMsg{findings: findings}
+	}
+}
+
+// scheduleFindingsRefresh returns a Cmd that fires findingsRefreshMsg after the
+// configured interval.
+func scheduleFindingsRefresh() tea.Cmd {
+	return tea.Tick(findingsRefreshInterval, func(time.Time) tea.Msg {
+		return findingsRefreshMsg{}
+	})
+}
+
+// findingsLoadedMsg carries the result of a store query for findings.
+type findingsLoadedMsg struct {
+	findings []store.StoredFinding
+	err      string
+}
+
+// renderFindings builds the full text content for the Findings viewport.
+func renderFindings(findings []store.StoredFinding, errMsg string, width int) string {
+	var b strings.Builder
+
+	if errMsg != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(1)).Render("Error loading findings: " + errMsg))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	if len(findings) == 0 {
+		b.WriteString(dimStyle().Render("No findings yet. Run the pipeline or analyze a contract to get started."))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	// Group findings by severity for a quick summary header.
+	counts := map[string]int{}
+	for _, f := range findings {
+		counts[f.Severity]++
+	}
+	summaryParts := []string{}
+	for _, sev := range []string{"Critical", "High", "Medium", "Low", "Informational"} {
+		if n := counts[sev]; n > 0 {
+			summaryParts = append(summaryParts, fmt.Sprintf("%s:%d", sev, n))
+		}
+	}
+	summary := dimStyle().Render(fmt.Sprintf("%d finding(s)  [%s]", len(findings), strings.Join(summaryParts, "  ")))
+	b.WriteString(summary)
+	b.WriteString("\n\n")
+
+	sep := dimStyle().Render(strings.Repeat("─", min(width, 80)))
+
+	for _, f := range findings {
+		b.WriteString(renderFinding(f))
+		b.WriteString("\n")
+		b.WriteString(sep)
+		b.WriteString("\n")
+	}
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderFinding renders a single StoredFinding as a multi-line summary block.
+func renderFinding(f store.StoredFinding) string {
+	var b strings.Builder
+
+	sevStyle := findingSeverityStyle(f.Severity)
+
+	// Title line: severity badge + title
+	badge := sevStyle.Render(fmt.Sprintf(" %-14s", f.Severity))
+	title := lipgloss.NewStyle().Bold(true).Render(f.Title)
+	b.WriteString(fmt.Sprintf("%s  %s\n", badge, title))
+
+	// ID + contract
+	idStr := dimStyle().Render(fmt.Sprintf("  ID: %-20s  Contract: %s (chain %d)", f.ID, f.Address, f.ChainID))
+	b.WriteString(idStr + "\n")
+
+	// Category + confidence
+	if f.Category != "" || f.Confidence > 0 {
+		meta := dimStyle().Render(fmt.Sprintf("  Category: %-25s  Confidence: %.0f%%", f.Category, f.Confidence*100))
+		b.WriteString(meta + "\n")
+	}
+
+	// Affected function / file
+	if f.AffectedFunction != "" {
+		fn := dimStyle().Render(fmt.Sprintf("  Function: %s", f.AffectedFunction))
+		b.WriteString(fn + "\n")
+	}
+
+	// Impact (one line, trimmed)
+	if f.Impact != "" {
+		impact := strings.ReplaceAll(strings.TrimSpace(f.Impact), "\n", " ")
+		if len(impact) > 120 {
+			impact = impact[:117] + "…"
+		}
+		b.WriteString(dimStyle().Render("  Impact:   "+impact) + "\n")
+	}
+
+	// Report path if available
+	if f.ReportPath != "" {
+		b.WriteString(dimStyle().Render("  Report:   "+f.ReportPath) + "\n")
+	}
+
+	return b.String()
+}
+
+func findingSeverityStyle(severity string) lipgloss.Style {
+	switch severity {
+	case "Critical":
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(0)).Background(lipgloss.ANSIColor(1)) // white on red
+	case "High":
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(1)) // red
+	case "Medium":
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(3)) // yellow
+	case "Low":
+		return lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(4)) // blue
+	default:
+		return dimStyle()
 	}
 }
 
@@ -504,19 +709,22 @@ func (m *Model) runAgent(input string) tea.Cmd {
 // Tab bar.
 
 func (m Model) renderTabBar() string {
-	chatLabel := " Chat "
-	logsLabel := " Logs "
-
-	if m.activeTab == tabChat {
-		chatLabel = activeTabStyle().Render(chatLabel)
-		logsLabel = inactiveTabStyle().Render(logsLabel)
-	} else {
-		chatLabel = inactiveTabStyle().Render(chatLabel)
-		logsLabel = activeTabStyle().Render(logsLabel)
+	labels := []string{" Chat ", " Logs ", " Findings "}
+	rendered := make([]string, len(labels))
+	for i, label := range labels {
+		if m.activeTab == i {
+			rendered[i] = activeTabStyle().Render(label)
+		} else {
+			// Show finding count badge on the Findings tab when there are findings.
+			if i == tabFindings && len(m.findings) > 0 {
+				label = fmt.Sprintf(" Findings (%d) ", len(m.findings))
+			}
+			rendered[i] = inactiveTabStyle().Render(label)
+		}
 	}
 
 	sep := dimStyle().Render("│")
-	bar := chatLabel + sep + logsLabel
+	bar := strings.Join(rendered, sep)
 
 	if m.agentBusy && m.agentStatus != "" {
 		bar += dimStyle().Render("  ⏳ " + m.agentStatus)
