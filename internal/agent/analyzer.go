@@ -10,6 +10,7 @@ import (
 
 	"github.com/julienrbrt/bim/internal/analyzer"
 	"github.com/julienrbrt/bim/internal/config"
+	"github.com/julienrbrt/bim/internal/rpc"
 	"github.com/julienrbrt/bim/internal/sourcify"
 	"github.com/julienrbrt/bim/internal/store"
 )
@@ -27,11 +28,12 @@ var interestingVarPattern = regexp.MustCompile(
 // AnalyzerTool fetches verified contract source code from Sourcify and runs
 // LLM-powered security analysis, persisting results in the store.
 type AnalyzerTool struct {
-	analyzer *analyzer.Analyzer
-	sourcify *sourcify.Client
-	store    store.Store
-	cfg      *config.Config
-	logger   *slog.Logger
+	analyzer         *analyzer.Analyzer
+	sourcify         *sourcify.Client
+	store            store.Store
+	cfg              *config.Config
+	logger           *slog.Logger
+	activityCheckers map[uint64]*rpc.ActivityChecker
 }
 
 func NewAnalyzerTool(
@@ -41,12 +43,22 @@ func NewAnalyzerTool(
 	logger *slog.Logger,
 	cfg *config.Config,
 ) *AnalyzerTool {
+	checkers := make(map[uint64]*rpc.ActivityChecker, len(cfg.Chains))
+	for _, chain := range cfg.Chains {
+		checkers[chain.ID] = rpc.NewActivityChecker(
+			chain.RPCURL,
+			nil,
+			logger,
+		)
+	}
+
 	return &AnalyzerTool{
-		analyzer: az,
-		sourcify: sourcifyClient,
-		store:    st,
-		cfg:      cfg,
-		logger:   logger,
+		analyzer:         az,
+		sourcify:         sourcifyClient,
+		store:            st,
+		cfg:              cfg,
+		logger:           logger,
+		activityCheckers: checkers,
 	}
 }
 
@@ -110,6 +122,26 @@ func (t *AnalyzerTool) Analyze(ctx context.Context, chainID uint64, address stri
 		result.Error = errMsg
 		t.markFailed(ctx, chainID, address, errMsg)
 		return result, fmt.Errorf("%s", errMsg)
+	}
+
+	// Activity check: skip contracts that have neither been recently verified
+	// nor shown any on-chain activity within the configured look-back window.
+	if skipped, reason := t.checkActivity(ctx, chainID, address, contract); skipped {
+		skipMsg := fmt.Sprintf("contract skipped (inactive): %s", reason)
+		t.logger.Info("skipping inactive contract",
+			"chain_id", chainID,
+			"address", address,
+			"reason", reason,
+		)
+		if err := t.store.UpdateContractStatus(ctx, chainID, address, store.StatusSkipped, skipMsg); err != nil {
+			t.logger.Warn("failed to mark inactive contract as skipped",
+				"chain_id", chainID,
+				"address", address,
+				"error", err,
+			)
+		}
+		result.Summary = fmt.Sprintf("Contract %s skipped: %s", address, reason)
+		return result, nil
 	}
 
 	sources := make(map[string]string, len(contract.Sources))
@@ -302,6 +334,56 @@ func (t *AnalyzerTool) buildSummary(result *AnalyzeResult, analysis *analyzer.An
 	}
 
 	return b.String()
+}
+
+// checkActivity uses the RPC activity checker for the given chain to determine
+// whether the contract should be analyzed.
+func (t *AnalyzerTool) checkActivity(ctx context.Context, chainID uint64, address string, contract *sourcify.ContractResponse) (skip bool, reason string) {
+	checker, ok := t.activityCheckers[chainID]
+	if !ok {
+		// No checker configured for this chain — do not skip.
+		t.logger.Debug("no activity checker for chain, skipping activity check",
+			"chain_id", chainID,
+			"address", address,
+		)
+		return false, ""
+	}
+
+	var verifiedAt time.Time
+	if contract.VerifiedAt != "" {
+		if parsed, err := time.Parse(time.RFC3339, contract.VerifiedAt); err == nil {
+			verifiedAt = parsed
+		} else {
+			t.logger.Debug("could not parse contract verifiedAt timestamp",
+				"chain_id", chainID,
+				"address", address,
+				"verified_at", contract.VerifiedAt,
+				"error", err,
+			)
+		}
+	}
+
+	activityResult, err := checker.IsActive(ctx, address, verifiedAt, t.cfg.MinContractAgeDays)
+	if err != nil {
+		// Non-fatal: if the RPC call fails we conservatively proceed with analysis.
+		t.logger.Warn("activity check failed, proceeding with analysis",
+			"chain_id", chainID,
+			"address", address,
+			"error", err,
+		)
+		return false, ""
+	}
+
+	if activityResult.Active {
+		t.logger.Debug("contract passed activity check",
+			"chain_id", chainID,
+			"address", address,
+			"reason", activityResult.Reason,
+		)
+		return false, ""
+	}
+
+	return true, activityResult.Reason
 }
 
 func (t *AnalyzerTool) markFailed(ctx context.Context, chainID uint64, address, errMsg string) {

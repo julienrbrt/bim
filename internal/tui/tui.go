@@ -401,10 +401,9 @@ func (m Model) View() tea.View {
 // Layout helpers.
 
 func (m *Model) recalcLayout() {
-	vpHeight := m.height - 2 // tab bar + input
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
+	vpHeight := max(
+		// tab bar + input
+		m.height-2, 1)
 
 	m.chatVP.SetWidth(m.width)
 	m.chatVP.SetHeight(vpHeight)

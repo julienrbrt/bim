@@ -119,7 +119,7 @@ type BackgroundStatus struct {
 	// TotalFound is the cumulative count of new contracts found across all runs.
 	TotalFound int64 `json:"totalFound"`
 	// LastRunAt is when the last discovery cycle completed.
-	LastRunAt time.Time `json:"lastRunAt,omitempty"`
+	LastRunAt time.Time `json:"lastRunAt"`
 	// LastError is the error from the most recent run, if any.
 	LastError string `json:"lastError,omitempty"`
 	// LatestResults is the result from the most recent discovery cycle.

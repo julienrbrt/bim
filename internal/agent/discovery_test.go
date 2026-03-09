@@ -119,8 +119,7 @@ func TestBackgroundPolling_StartAndStop(t *testing.T) {
 		t.Fatal("expected IsPolling()=false before start")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	dt.StartBackgroundPolling(ctx)
 
@@ -155,8 +154,7 @@ func TestBackgroundPolling_MultipleTicks(t *testing.T) {
 
 	dt := NewDiscoveryTool(sourcifyClient, st, source, logger, cfg)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	dt.StartBackgroundPolling(ctx)
 
@@ -193,8 +191,7 @@ func TestBackgroundPolling_LatestResults(t *testing.T) {
 		t.Errorf("expected TotalRuns=0 before start, got %d", status.TotalRuns)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	dt.StartBackgroundPolling(ctx)
 
@@ -242,8 +239,7 @@ func TestBackgroundPolling_IdempotentStart(t *testing.T) {
 
 	dt := NewDiscoveryTool(sourcifyClient, st, source, logger, cfg)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	dt.StartBackgroundPolling(ctx)
 	// Second call should be a no-op.
@@ -332,8 +328,7 @@ func TestBackgroundPolling_ThrottlesOnDemandDiscover(t *testing.T) {
 
 	dt := NewDiscoveryTool(sourcifyClient, st, source, logger, cfg)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	dt.StartBackgroundPolling(ctx)
 
@@ -384,8 +379,7 @@ func TestBackgroundPolling_CumulativeTotalFound(t *testing.T) {
 
 	dt := NewDiscoveryTool(sourcifyClient, st, source, logger, cfg)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	dt.StartBackgroundPolling(ctx)
 

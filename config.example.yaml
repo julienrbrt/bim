@@ -24,6 +24,9 @@ sourcify_base_url: https://sourcify.dev/server
 # How often the discovery loop polls for new contracts.
 poll_interval: 60s
 
+# Activity look-back window in days (default: 30).
+min_contract_age_days: 30
+
 # Blockchain networks to monitor.
 chains:
   - id: 1

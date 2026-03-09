@@ -42,6 +42,12 @@ type Config struct {
 	// analysis strategy is used instead of sending all sources in one request.
 	MaxSinglePassTokens int `yaml:"max_single_pass_tokens"`
 
+	// MinContractAgeDays is the activity look-back window in days.
+	// A contract must either have been verified on Sourcify more recently than
+	// this many days ago, OR have emitted at least one on-chain log in the same
+	// window, to be considered worth analyzing.  Defaults to 30.
+	MinContractAgeDays int `yaml:"min_contract_age_days"`
+
 	// SkippedContracts is a list of contract name substrings (case-insensitive)
 	// that should be skipped during analysis. Contracts whose short name or
 	// fully-qualified name contains any of these substrings are marked as
@@ -62,6 +68,7 @@ func defaults() Config {
 		SourcifyBaseURL:     "https://sourcify.dev/server",
 		PollInterval:        60 * time.Second,
 		MaxSinglePassTokens: 200_000,
+		MinContractAgeDays:  30,
 		SkippedContracts: []string{
 			// All OpenZeppelin contracts — matched against source file paths.
 			// A single entry covers every current and future OZ contract.
@@ -155,6 +162,9 @@ func (c *Config) validate() error {
 	}
 	if c.PollInterval < time.Second {
 		return fmt.Errorf("poll_interval must be at least 1s, got %s", c.PollInterval)
+	}
+	if c.MinContractAgeDays < 0 {
+		return fmt.Errorf("min_contract_age_days must be non-negative, got %d", c.MinContractAgeDays)
 	}
 	return nil
 }
