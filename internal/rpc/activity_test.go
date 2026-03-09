@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strconv"
 	"testing"
 	"time"
 )
@@ -20,8 +19,7 @@ func newTestLogger() *slog.Logger {
 
 // rpcHandler is a configurable httptest handler that serves JSON-RPC responses.
 type rpcHandler struct {
-	// responses maps method+blockRef → raw result value to return.
-	// For methods that don't depend on params, key is just the method name.
+	// responses maps method name → raw result value to return.
 	responses map[string]any
 	// errors maps method name → rpcError to return for every call to that method.
 	errors map[string]*rpcError
@@ -71,12 +69,11 @@ func (h *rpcHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// blockResponse builds a fake eth_getBlockByNumber result with the given block
-// number and UNIX timestamp.
+// blockResponse builds a fake eth_getBlockByNumber result.
 func blockResponse(number uint64, ts uint64) map[string]string {
 	return map[string]string{
-		"number":    "0x" + strconv.FormatUint(number, 16),
-		"timestamp": "0x" + strconv.FormatUint(ts, 16),
+		"number":    fmt.Sprintf("0x%x", number),
+		"timestamp": fmt.Sprintf("0x%x", ts),
 	}
 }
 
@@ -96,52 +93,18 @@ const (
 	testBlockNum = uint64(20_000_000)
 )
 
-func testBlockTS() uint64 {
-	return uint64(time.Now().UTC().Unix())
-}
+func nowTS() uint64 { return uint64(time.Now().UTC().Unix()) }
 
-// --------------------------------------------------------------------------
-// Tests
-// --------------------------------------------------------------------------
-
-// TestIsActive_RecentVerification checks that a contract verified less than
-// minDays ago is immediately marked active without any RPC calls.
-func TestIsActive_RecentVerification(t *testing.T) {
-	h := newRPCHandler()
-	checker, srv := newCheckerWithHandler(h)
-	defer srv.Close()
-
-	// Verified 1 day ago — well within the 30-day window.
-	verifiedAt := time.Now().UTC().Add(-24 * time.Hour)
-
-	result, err := checker.IsActive(context.Background(), testAddress, verifiedAt, 30)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Active {
-		t.Errorf("expected Active=true for recently verified contract, got false; reason: %s", result.Reason)
-	}
-	// No RPC calls should have been made.
-	if len(h.calls) != 0 {
-		t.Errorf("expected no RPC calls for fast-path, but got: %v", h.calls)
-	}
-}
-
-// TestIsActive_RecentVerification_ExactCutoff verifies that a contract verified
-// exactly at the boundary (minDays ago to the second) is treated as NOT recent —
-// the cutoff is exclusive.
-func TestIsActive_RecentVerification_ExactCutoff(t *testing.T) {
-	// We need a handler that:
-	//  - returns a "latest" block whose timestamp is in the future relative to
-	//    the cutoff (so the "latestTimestamp <= cutoffUnix" early-return is NOT
-	//    taken), AND
-	//  - serves bisection calls (any numbered block) with an old timestamp so
-	//    bisection converges quickly, AND
-	//  - returns no logs so the contract ends up inactive.
-	nowTS := uint64(time.Now().UTC().Unix())
-	oldTS := uint64(time.Now().UTC().AddDate(-1, 0, 0).Unix())
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// syntheticChain returns a handler for a chain where:
+//
+//	timestamp(block N) = genesisTS + N * blockSecs
+//
+// The latest block is latestBlock. Callers can override eth_getLogs by setting
+// a non-nil logsResult.
+func syntheticChain(t *testing.T, genesisTS, latestBlock, blockSecs uint64, logsResult any) (http.Handler, *int) {
+	t.Helper()
+	bisectCalls := new(int)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req rpcRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -152,21 +115,23 @@ func TestIsActive_RecentVerification_ExactCutoff(t *testing.T) {
 		var result any
 		switch req.Method {
 		case "eth_getBlockByNumber":
-			var blockRef string
-			if len(req.Params) > 0 {
-				_ = json.Unmarshal([]byte(`"`), &blockRef) // reset
-				raw, _ := json.Marshal(req.Params[0])
-				_ = json.Unmarshal(raw, &blockRef)
-			}
+			blockRef, _ := req.Params[0].(string)
+			var n uint64
 			if blockRef == "latest" {
-				// Latest block has a current timestamp so we enter the bisect path.
-				result = blockResponse(testBlockNum, nowTS)
+				n = latestBlock
 			} else {
-				// Any numbered block during bisection gets an old timestamp.
-				result = blockResponse(testBlockNum/2, oldTS)
+				*bisectCalls++
+				n, _ = hexToUint64(blockRef)
 			}
+			result = blockResponse(n, genesisTS+n*blockSecs)
+
 		case "eth_getLogs":
-			result = []any{}
+			if logsResult != nil {
+				result = logsResult
+			} else {
+				result = []any{}
+			}
+
 		default:
 			http.Error(w, "method not found", http.StatusNotFound)
 			return
@@ -174,117 +139,158 @@ func TestIsActive_RecentVerification_ExactCutoff(t *testing.T) {
 
 		resp := map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}
 		_ = json.NewEncoder(w).Encode(resp)
-	}))
+	}), bisectCalls
+}
+
+// TestIsActive_RecentlyDeployedFastPath checks that a contract whose deploy
+// block is at or above fromBlock is immediately marked active — no eth_getLogs
+// call needed.
+func TestIsActive_RecentlyDeployedFastPath(t *testing.T) {
+	const (
+		blockSecs   = uint64(12)
+		latestBlock = uint64(10_000_000)
+		minDays     = 30
+	)
+	latestTS := nowTS()
+	genesisTS := latestTS - latestBlock*blockSecs
+
+	// deployBlock is very close to the tip — definitely within 30 days.
+	deployBlock := latestBlock - 100
+
+	handler, _ := syntheticChain(t, genesisTS, latestBlock, blockSecs, nil)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	checker := NewActivityChecker(srv.URL, srv.Client(), newTestLogger())
 
-	// Exactly 30 days ago — should NOT satisfy the "recent" fast-path.
-	verifiedAt := time.Now().UTC().AddDate(0, 0, -30)
-
-	result, err := checker.IsActive(context.Background(), testAddress, verifiedAt, 30)
+	result, err := checker.IsActive(context.Background(), testAddress, deployBlock, minDays)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Not recent + no logs → inactive.
-	if result.Active {
-		t.Errorf("expected Active=false for contract verified exactly at cutoff, got true; reason: %s", result.Reason)
+	if !result.Active {
+		t.Errorf("expected Active=true for recently deployed contract, got false; reason: %s", result.Reason)
+	}
+	// When the deploy-block fast-path fires, no logs are queried.
+	if result.LogsFound != 0 {
+		t.Errorf("expected LogsFound=0 when deploy block is within window, got %d", result.LogsFound)
 	}
 }
 
-// TestIsActive_ActiveLogs checks that a contract with recent logs is marked active.
-func TestIsActive_ActiveLogs(t *testing.T) {
-	h := newRPCHandler()
-	h.responses["eth_getBlockByNumber"] = blockResponse(testBlockNum, testBlockTS())
-	// Return 3 fake log entries.
-	h.responses["eth_getLogs"] = []map[string]string{
+// TestIsActive_OldDeployNoLogs verifies that an old contract with no recent
+// logs is marked inactive.
+func TestIsActive_OldDeployNoLogs(t *testing.T) {
+	const (
+		blockSecs   = uint64(12)
+		latestBlock = uint64(10_000_000)
+		minDays     = 30
+	)
+	latestTS := nowTS()
+	genesisTS := latestTS - latestBlock*blockSecs
+
+	// deployBlock is very early in the chain — well outside the 30-day window.
+	deployBlock := uint64(1)
+
+	handler, _ := syntheticChain(t, genesisTS, latestBlock, blockSecs, []any{})
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	checker := NewActivityChecker(srv.URL, srv.Client(), newTestLogger())
+
+	result, err := checker.IsActive(context.Background(), testAddress, deployBlock, minDays)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Active {
+		t.Errorf("expected Active=false for old contract with no logs, got true; reason: %s", result.Reason)
+	}
+}
+
+// TestIsActive_OldDeployWithRecentLogs verifies that an old contract that has
+// emitted recent logs is marked active.
+func TestIsActive_OldDeployWithRecentLogs(t *testing.T) {
+	const (
+		blockSecs   = uint64(12)
+		latestBlock = uint64(10_000_000)
+		minDays     = 30
+	)
+	latestTS := nowTS()
+	genesisTS := latestTS - latestBlock*blockSecs
+
+	deployBlock := uint64(1) // old deployment
+
+	recentLogs := []map[string]string{
 		{"transactionHash": "0xaaa"},
 		{"transactionHash": "0xbbb"},
-		{"transactionHash": "0xccc"},
 	}
-
-	checker, srv := newCheckerWithHandler(h)
+	handler, _ := syntheticChain(t, genesisTS, latestBlock, blockSecs, recentLogs)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	// verifiedAt is old — should fall through to the logs check.
-	verifiedAt := time.Now().UTC().AddDate(0, -6, 0) // 6 months ago
+	checker := NewActivityChecker(srv.URL, srv.Client(), newTestLogger())
 
-	result, err := checker.IsActive(context.Background(), testAddress, verifiedAt, 30)
+	result, err := checker.IsActive(context.Background(), testAddress, deployBlock, minDays)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.Active {
-		t.Errorf("expected Active=true for contract with recent logs, got false; reason: %s", result.Reason)
+		t.Errorf("expected Active=true for old contract with recent logs, got false; reason: %s", result.Reason)
 	}
-	if result.LogsFound != 3 {
-		t.Errorf("expected LogsFound=3, got %d", result.LogsFound)
-	}
-	if result.LatestBlock != testBlockNum {
-		t.Errorf("expected LatestBlock=%d, got %d", testBlockNum, result.LatestBlock)
+	if result.LogsFound != 2 {
+		t.Errorf("expected LogsFound=2, got %d", result.LogsFound)
 	}
 }
 
-// TestIsActive_InactiveLogs checks that a contract with no recent logs and an
-// old verification is marked inactive.
-func TestIsActive_InactiveLogs(t *testing.T) {
-	h := newRPCHandler()
-	h.responses["eth_getBlockByNumber"] = blockResponse(testBlockNum, testBlockTS())
-	h.responses["eth_getLogs"] = []any{} // empty
+// TestIsActive_UnknownDeployBlock checks the path where the deployment block is
+// unknown (0) — only the eth_getLogs check is performed.
+func TestIsActive_UnknownDeployBlock(t *testing.T) {
+	const (
+		blockSecs   = uint64(12)
+		latestBlock = uint64(10_000_000)
+		minDays     = 30
+	)
+	latestTS := nowTS()
+	genesisTS := latestTS - latestBlock*blockSecs
 
-	checker, srv := newCheckerWithHandler(h)
+	recentLogs := []map[string]string{{"transactionHash": "0x111"}}
+	handler, _ := syntheticChain(t, genesisTS, latestBlock, blockSecs, recentLogs)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	verifiedAt := time.Now().UTC().AddDate(0, -3, 0) // 3 months ago
+	checker := NewActivityChecker(srv.URL, srv.Client(), newTestLogger())
 
-	result, err := checker.IsActive(context.Background(), testAddress, verifiedAt, 30)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Active {
-		t.Errorf("expected Active=false for contract with no recent logs, got true; reason: %s", result.Reason)
-	}
-	if result.LogsFound != 0 {
-		t.Errorf("expected LogsFound=0, got %d", result.LogsFound)
-	}
-}
-
-// TestIsActive_NoVerificationDate checks the path where verifiedAt is zero —
-// only the RPC logs check is performed.
-func TestIsActive_NoVerificationDate(t *testing.T) {
-	h := newRPCHandler()
-	h.responses["eth_getBlockByNumber"] = blockResponse(testBlockNum, testBlockTS())
-	h.responses["eth_getLogs"] = []map[string]string{
-		{"transactionHash": "0x111"},
-	}
-
-	checker, srv := newCheckerWithHandler(h)
-	defer srv.Close()
-
-	result, err := checker.IsActive(context.Background(), testAddress, time.Time{}, 30)
+	// deployBlock=0 → unknown, must fall through to eth_getLogs.
+	result, err := checker.IsActive(context.Background(), testAddress, 0, minDays)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.Active {
-		t.Errorf("expected Active=true when logs found and no verifiedAt, got false; reason: %s", result.Reason)
+		t.Errorf("expected Active=true when logs found and deploy block unknown, got false; reason: %s", result.Reason)
 	}
 }
 
-// TestIsActive_NoVerificationDate_NoLogs checks that a contract with no
-// verification date and no logs is inactive.
-func TestIsActive_NoVerificationDate_NoLogs(t *testing.T) {
-	h := newRPCHandler()
-	h.responses["eth_getBlockByNumber"] = blockResponse(testBlockNum, testBlockTS())
-	h.responses["eth_getLogs"] = []any{}
+// TestIsActive_UnknownDeployBlock_NoLogs checks that unknown deploy block +
+// no logs → inactive.
+func TestIsActive_UnknownDeployBlock_NoLogs(t *testing.T) {
+	const (
+		blockSecs   = uint64(12)
+		latestBlock = uint64(10_000_000)
+		minDays     = 30
+	)
+	latestTS := nowTS()
+	genesisTS := latestTS - latestBlock*blockSecs
 
-	checker, srv := newCheckerWithHandler(h)
+	handler, _ := syntheticChain(t, genesisTS, latestBlock, blockSecs, []any{})
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	result, err := checker.IsActive(context.Background(), testAddress, time.Time{}, 30)
+	checker := NewActivityChecker(srv.URL, srv.Client(), newTestLogger())
+
+	result, err := checker.IsActive(context.Background(), testAddress, 0, minDays)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Active {
-		t.Errorf("expected Active=false with no verifiedAt and no logs, got true; reason: %s", result.Reason)
+		t.Errorf("expected Active=false with unknown deploy block and no logs, got true; reason: %s", result.Reason)
 	}
 }
 
@@ -293,15 +299,10 @@ func TestIsActive_NoVerificationDate_NoLogs(t *testing.T) {
 func TestIsActive_GetBlockError(t *testing.T) {
 	h := newRPCHandler()
 	h.errors["eth_getBlockByNumber"] = &rpcError{Code: -32603, Message: "internal error"}
-
 	checker, srv := newCheckerWithHandler(h)
 	defer srv.Close()
 
-	// 1 year ago — unambiguously outside the 30-day window, so the fast path
-	// is not taken and we reach the RPC call.
-	verifiedAt := time.Now().UTC().AddDate(-1, 0, 0)
-
-	_, err := checker.IsActive(context.Background(), testAddress, verifiedAt, 30)
+	_, err := checker.IsActive(context.Background(), testAddress, 1, 30)
 	if err == nil {
 		t.Fatal("expected error from getLatestBlock, got nil")
 	}
@@ -310,16 +311,54 @@ func TestIsActive_GetBlockError(t *testing.T) {
 // TestIsActive_GetLogsError checks that a failing eth_getLogs call results in
 // Active=false (conservative non-fatal path) rather than a returned error.
 func TestIsActive_GetLogsError(t *testing.T) {
-	h := newRPCHandler()
-	h.responses["eth_getBlockByNumber"] = blockResponse(testBlockNum, testBlockTS())
-	h.errors["eth_getLogs"] = &rpcError{Code: -32005, Message: "query returned more than 10000 results"}
+	const (
+		blockSecs   = uint64(12)
+		latestBlock = uint64(10_000_000)
+		minDays     = 30
+	)
+	latestTS := nowTS()
+	genesisTS := latestTS - latestBlock*blockSecs
 
-	checker, srv := newCheckerWithHandler(h)
+	// Use a real synthetic-chain handler for block calls but inject a getLogs error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		var resp map[string]any
+		switch req.Method {
+		case "eth_getBlockByNumber":
+			blockRef, _ := req.Params[0].(string)
+			var n uint64
+			if blockRef == "latest" {
+				n = latestBlock
+			} else {
+				n, _ = hexToUint64(blockRef)
+			}
+			resp = map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": blockResponse(n, genesisTS+n*blockSecs),
+			}
+		case "eth_getLogs":
+			resp = map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": &rpcError{Code: -32005, Message: "query returned more than 10000 results"},
+			}
+		default:
+			http.Error(w, "method not found", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
 	defer srv.Close()
 
-	verifiedAt := time.Now().UTC().AddDate(-1, 0, 0) // 1 year ago
+	checker := NewActivityChecker(srv.URL, srv.Client(), newTestLogger())
 
-	result, err := checker.IsActive(context.Background(), testAddress, verifiedAt, 30)
+	// Old deploy block so we don't hit the fast path.
+	result, err := checker.IsActive(context.Background(), testAddress, 1, minDays)
 	if err != nil {
 		t.Fatalf("expected no error for non-fatal getLogs failure, got: %v", err)
 	}
@@ -331,45 +370,46 @@ func TestIsActive_GetLogsError(t *testing.T) {
 // TestIsActive_DefaultMinDays verifies that passing minDays=0 uses the
 // defaultMinAgeDays constant (30) and does not panic.
 func TestIsActive_DefaultMinDays(t *testing.T) {
-	h := newRPCHandler()
-	h.responses["eth_getBlockByNumber"] = blockResponse(testBlockNum, testBlockTS())
-	h.responses["eth_getLogs"] = []any{}
+	const (
+		blockSecs   = uint64(12)
+		latestBlock = uint64(10_000_000)
+	)
+	latestTS := nowTS()
+	genesisTS := latestTS - latestBlock*blockSecs
 
-	checker, srv := newCheckerWithHandler(h)
+	handler, _ := syntheticChain(t, genesisTS, latestBlock, blockSecs, []any{})
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	verifiedAt := time.Now().UTC().AddDate(-1, 0, 0) // 1 year ago
+	checker := NewActivityChecker(srv.URL, srv.Client(), newTestLogger())
 
-	result, err := checker.IsActive(context.Background(), testAddress, verifiedAt, 0)
+	// Old deploy block + no logs → inactive regardless of which default is used.
+	result, err := checker.IsActive(context.Background(), testAddress, 1, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Old contract + no logs → inactive.
 	if result.Active {
-		t.Errorf("expected Active=false with default window, got true; reason: %s", result.Reason)
+		t.Errorf("expected Active=false with default window and no logs, got true; reason: %s", result.Reason)
 	}
 }
 
 // TestIsActive_BisectFromBlock verifies that the binary search converges on the
-// correct fromBlock. We use a synthetic chain with a known genesis time and a
-// fixed block time so the expected fromBlock is trivially computable:
-//
-//	timestamp(block N) = genesisTS + N * blockSecs
-//	fromBlock          = ceil((cutoffUnix - genesisTS) / blockSecs)
+// correct fromBlock using a synthetic chain where timestamp(N) = genesisTS + N*blockSecs.
+// The expected fromBlock is exactly derivable from the cutoff without knowing avg block time.
 func TestIsActive_BisectFromBlock(t *testing.T) {
 	const (
 		minDays     = 7
-		blockSecs   = uint64(12)         // Ethereum-like
-		latestBlock = uint64(10_000_000) // number of blocks
+		blockSecs   = uint64(12)
+		latestBlock = uint64(10_000_000)
 	)
 
-	// Anchor latestTS at now so the chain definitely extends past any cutoff.
-	latestTS := uint64(time.Now().UTC().Unix())
+	// Anchor latest block at now so the chain clearly extends past any cutoff.
+	latestTS := nowTS()
 	genesisTS := latestTS - latestBlock*blockSecs
 
 	cutoffUnix := uint64(time.Now().UTC().AddDate(0, 0, -minDays).Unix())
-	// Expected fromBlock: first block whose ts >= cutoffUnix.
-	// ts(N) = genesisTS + N*blockSecs  =>  N = ceil((cutoffUnix - genesisTS) / blockSecs)
+	// timestamp(N) = genesisTS + N*blockSecs  =>  N = (cutoffUnix - genesisTS) / blockSecs
+	// Round up to get the first block >= cutoff.
 	expectedFromBlock := (cutoffUnix - genesisTS + blockSecs - 1) / blockSecs
 
 	var capturedFromBlock uint64
@@ -385,19 +425,16 @@ func TestIsActive_BisectFromBlock(t *testing.T) {
 		var result any
 		switch req.Method {
 		case "eth_getBlockByNumber":
-			// After JSON decode, Params[0] is a plain Go string.
 			blockRef, _ := req.Params[0].(string)
-			var blockNum uint64
+			var n uint64
 			if blockRef == "latest" {
-				blockNum = latestBlock
+				n = latestBlock
 			} else {
-				blockNum, _ = hexToUint64(blockRef)
+				n, _ = hexToUint64(blockRef)
 			}
-			ts := genesisTS + blockNum*blockSecs
-			result = blockResponse(blockNum, ts)
+			result = blockResponse(n, genesisTS+n*blockSecs)
 
 		case "eth_getLogs":
-			// Capture fromBlock for assertion.
 			if len(req.Params) > 0 {
 				raw, _ := json.Marshal(req.Params[0])
 				var filter map[string]string
@@ -419,15 +456,12 @@ func TestIsActive_BisectFromBlock(t *testing.T) {
 
 	checker := NewActivityChecker(srv.URL, srv.Client(), newTestLogger())
 
-	verifiedAt := time.Now().UTC().AddDate(-1, 0, 0) // 1 year ago — no fast path
-
-	// Sanity: latest block must be newer than the cutoff so we don't hit the
-	// "entire chain within window" early return.
+	// deployBlock=0 (unknown) so we always reach eth_getLogs.
 	if latestTS <= cutoffUnix {
 		t.Fatalf("test setup broken: latestTS %d <= cutoffUnix %d", latestTS, cutoffUnix)
 	}
 
-	_, err := checker.IsActive(context.Background(), testAddress, verifiedAt, minDays)
+	_, err := checker.IsActive(context.Background(), testAddress, 0, minDays)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -440,27 +474,24 @@ func TestIsActive_BisectFromBlock(t *testing.T) {
 	}
 }
 
-// TestIsActive_LowBlockNumber verifies behaviour when the entire chain history
-// fits within the look-back window (e.g. a very new chain or test environment).
-// bisectFromBlock must not underflow and the fromBlock passed to eth_getLogs
-// must be <= the chain height (100 in this test).
+// TestIsActive_LowBlockNumber verifies that fromBlock is clamped correctly when
+// the entire chain history is within the look-back window.
 func TestIsActive_LowBlockNumber(t *testing.T) {
-	const chainHeight = uint64(100)
+	const (
+		chainHeight = uint64(100)
+		blockSecs   = uint64(12)
+		minDays     = 30
+	)
+
+	// All blocks have an old timestamp so the chain predates the cutoff entirely.
+	// Use genesisTS 2 years ago; latestTS = genesisTS + 100*12 is still old.
+	genesisTS := uint64(time.Now().UTC().AddDate(-2, 0, 0).Unix())
+
+	// But latestTS must be > cutoffUnix to avoid the "entire chain in window"
+	// early return. We achieve this by using nowTS() for the latest block only,
+	// while bisection calls get the old timestamp.
 	var capturedFromBlock uint64
 	captured := false
-
-	// All blocks (including "latest" and any numbered block) have a timestamp
-	// that is 2 years in the past — well outside any 30-day window — so the
-	// "latestTimestamp <= cutoffUnix" fast-return is NOT triggered (that branch
-	// fires when latestTS <= cutoff, meaning the latest block is *older* than
-	// the window which is the opposite of what a live chain would look like).
-	//
-	// Wait — we actually DO want to test bisection here. To avoid the early
-	// return we need latestTimestamp > cutoffUnix. Use a timestamp of "now"
-	// for "latest" but an old timestamp for numbered blocks during bisection
-	// so bisection converges to a small fromBlock.
-	nowTS := uint64(time.Now().UTC().Unix())
-	oldTS := uint64(time.Now().UTC().AddDate(-2, 0, 0).Unix())
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req rpcRequest
@@ -475,13 +506,12 @@ func TestIsActive_LowBlockNumber(t *testing.T) {
 		case "eth_getBlockByNumber":
 			blockRef, _ := req.Params[0].(string)
 			if blockRef == "latest" {
-				result = blockResponse(chainHeight, nowTS)
+				result = blockResponse(chainHeight, nowTS())
 			} else {
-				// Numbered block during bisection: return an old timestamp so
-				// bisection pushes fromBlock toward 0.
 				n, _ := hexToUint64(blockRef)
-				result = blockResponse(n, oldTS)
+				result = blockResponse(n, genesisTS+n*blockSecs)
 			}
+
 		case "eth_getLogs":
 			if len(req.Params) > 0 {
 				raw, _ := json.Marshal(req.Params[0])
@@ -492,6 +522,7 @@ func TestIsActive_LowBlockNumber(t *testing.T) {
 				}
 			}
 			result = []any{}
+
 		default:
 			http.Error(w, "method not found", http.StatusNotFound)
 			return
@@ -504,9 +535,7 @@ func TestIsActive_LowBlockNumber(t *testing.T) {
 
 	checker := NewActivityChecker(srv.URL, srv.Client(), newTestLogger())
 
-	verifiedAt := time.Now().UTC().AddDate(-1, 0, 0)
-
-	_, err := checker.IsActive(context.Background(), testAddress, verifiedAt, 30)
+	_, err := checker.IsActive(context.Background(), testAddress, 0, minDays)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -520,31 +549,25 @@ func TestIsActive_LowBlockNumber(t *testing.T) {
 }
 
 // TestIsActive_LatestWithinWindow verifies that when the latest block's
-// timestamp is at or before the cutoff (i.e. the entire chain is "older" than
-// the window, as can happen in test environments or brand-new chains) the
-// function returns Active=true immediately without calling eth_getLogs.
+// timestamp is at or before the cutoff (entire chain is "older" than the
+// window) the function returns Active=true immediately without calling eth_getLogs.
 func TestIsActive_LatestWithinWindow(t *testing.T) {
 	h := newRPCHandler()
-	// The latest block has a timestamp that is 2 years in the past — so
-	// latestTimestamp <= cutoffUnix, which triggers the early-return branch.
+	// Latest block timestamp is 2 years in the past — older than any window.
 	oldBlockTS := uint64(time.Now().UTC().AddDate(-2, 0, 0).Unix())
 	h.responses["eth_getBlockByNumber"] = blockResponse(10, oldBlockTS)
-	// eth_getLogs must NOT be called (we never set a response for it).
+	// eth_getLogs must NOT be called.
 
 	checker, srv := newCheckerWithHandler(h)
 	defer srv.Close()
 
-	// Old verifiedAt so we skip the Sourcify fast-path.
-	verifiedAt := time.Now().UTC().AddDate(-1, 0, 0)
-
-	result, err := checker.IsActive(context.Background(), testAddress, verifiedAt, 30)
+	result, err := checker.IsActive(context.Background(), testAddress, 0, 30)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.Active {
-		t.Errorf("expected Active=true when latest block timestamp is within the window, got false; reason: %s", result.Reason)
+		t.Errorf("expected Active=true when latest block timestamp predates the window, got false; reason: %s", result.Reason)
 	}
-	// Confirm eth_getLogs was never called.
 	for _, call := range h.calls {
 		if call == "eth_getLogs" {
 			t.Error("eth_getLogs should not have been called in the early-return path")
@@ -552,8 +575,8 @@ func TestIsActive_LatestWithinWindow(t *testing.T) {
 	}
 }
 
-// TestIsActive_HTTPError checks that a non-200 HTTP response is returned as an
-// error from IsActive.
+// TestIsActive_HTTPError checks that a non-200 HTTP response is propagated as
+// an error from IsActive.
 func TestIsActive_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
@@ -562,10 +585,7 @@ func TestIsActive_HTTPError(t *testing.T) {
 
 	checker := NewActivityChecker(srv.URL, srv.Client(), newTestLogger())
 
-	// 1 year ago — unambiguously outside the 30-day window.
-	verifiedAt := time.Now().UTC().AddDate(-1, 0, 0)
-
-	_, err := checker.IsActive(context.Background(), testAddress, verifiedAt, 30)
+	_, err := checker.IsActive(context.Background(), testAddress, 1, 30)
 	if err == nil {
 		t.Fatal("expected error from HTTP 503 response, got nil")
 	}
@@ -579,12 +599,9 @@ func TestIsActive_CancelledContext(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 
-	// 1 year ago — unambiguously outside the 30-day window.
-	verifiedAt := time.Now().UTC().AddDate(-1, 0, 0)
-
-	_, err := checker.IsActive(ctx, testAddress, verifiedAt, 30)
+	_, err := checker.IsActive(ctx, testAddress, 1, 30)
 	if err == nil {
 		t.Fatal("expected error for cancelled context, got nil")
 	}
@@ -608,6 +625,7 @@ func TestHexToUint64(t *testing.T) {
 	}
 
 	for _, tc := range tests {
+		tc := tc
 		t.Run(fmt.Sprintf("input=%q", tc.input), func(t *testing.T) {
 			got, err := hexToUint64(tc.input)
 			if tc.wantErr {
@@ -627,8 +645,8 @@ func TestHexToUint64(t *testing.T) {
 	}
 }
 
-// TestNewActivityChecker_Defaults verifies that a nil HTTP client is handled
-// gracefully and a default client is created.
+// TestNewActivityChecker_Defaults verifies that a nil HTTP client is replaced
+// with a working default.
 func TestNewActivityChecker_Defaults(t *testing.T) {
 	checker := NewActivityChecker("http://localhost:8545", nil, newTestLogger())
 	if checker.httpClient == nil {
@@ -636,89 +654,49 @@ func TestNewActivityChecker_Defaults(t *testing.T) {
 	}
 }
 
-// TestIsActive_BisectionCachedAcrossCalls verifies that the bisection RPC calls
-// (eth_getBlockByNumber for numbered blocks) are only made once regardless of
-// how many times IsActive is called on the same checker within the same day.
-// Subsequent calls must reuse the cached fromBlock and only issue eth_getLogs.
+// TestIsActive_BisectionCachedAcrossCalls verifies that bisection RPC calls
+// (numbered eth_getBlockByNumber) are made only once regardless of how many
+// times IsActive is called on the same checker within the same day.
 func TestIsActive_BisectionCachedAcrossCalls(t *testing.T) {
 	const (
 		minDays     = 7
 		blockSecs   = uint64(12)
 		latestBlock = uint64(10_000_000)
 	)
-
-	latestTS := uint64(time.Now().UTC().Unix())
+	latestTS := nowTS()
 	genesisTS := latestTS - latestBlock*blockSecs
 
-	// Count how many times eth_getBlockByNumber is called with a numbered
-	// block ref (i.e. bisection calls, not the "latest" anchor call).
-	var bisectCalls int
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req rpcRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-
-		var result any
-		switch req.Method {
-		case "eth_getBlockByNumber":
-			blockRef, _ := req.Params[0].(string)
-			var blockNum uint64
-			if blockRef == "latest" {
-				blockNum = latestBlock
-			} else {
-				bisectCalls++
-				blockNum, _ = hexToUint64(blockRef)
-			}
-			ts := genesisTS + blockNum*blockSecs
-			result = blockResponse(blockNum, ts)
-
-		case "eth_getLogs":
-			result = []any{} // no logs — contract inactive
-
-		default:
-			http.Error(w, "method not found", http.StatusNotFound)
-			return
-		}
-
-		resp := map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
+	handler, bisectCalls := syntheticChain(t, genesisTS, latestBlock, blockSecs, []any{})
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	checker := NewActivityChecker(srv.URL, srv.Client(), newTestLogger())
-	verifiedAt := time.Now().UTC().AddDate(-1, 0, 0) // old — no fast path
 
 	const numCalls = 5
 	for i := range numCalls {
-		result, err := checker.IsActive(context.Background(), testAddress, verifiedAt, minDays)
+		result, err := checker.IsActive(context.Background(), testAddress, 0, minDays)
 		if err != nil {
 			t.Fatalf("call %d: unexpected error: %v", i, err)
 		}
-		// All calls should return the same Active=false result (no logs).
 		if result.Active {
-			t.Errorf("call %d: expected Active=false, got true; reason: %s", i, result.Reason)
+			t.Errorf("call %d: expected Active=false (no logs), got true; reason: %s", i, result.Reason)
 		}
 	}
 
-	// Bisection should have run exactly once; all subsequent calls must use the
-	// cache and skip the numbered eth_getBlockByNumber calls entirely.
-	if bisectCalls == 0 {
-		t.Error("expected at least one bisection call on the first IsActive invocation")
+	if *bisectCalls == 0 {
+		t.Error("expected bisection calls on the first IsActive invocation, got none")
 	}
-	bisectCallsAfterFirst := bisectCalls
-	// Run one more batch to confirm the count doesn't grow.
+	bisectCallsAfterFirst := *bisectCalls
+
+	// A second batch must not trigger any additional bisection calls.
 	for i := range numCalls {
-		_, err := checker.IsActive(context.Background(), testAddress, verifiedAt, minDays)
+		_, err := checker.IsActive(context.Background(), testAddress, 0, minDays)
 		if err != nil {
 			t.Fatalf("second batch call %d: unexpected error: %v", i, err)
 		}
 	}
-	if bisectCalls != bisectCallsAfterFirst {
-		t.Errorf("bisection ran again on subsequent calls: before=%d after=%d; cache is not working",
-			bisectCallsAfterFirst, bisectCalls)
+	if *bisectCalls != bisectCallsAfterFirst {
+		t.Errorf("bisection ran again after cache was populated: before=%d after=%d",
+			bisectCallsAfterFirst, *bisectCalls)
 	}
 }

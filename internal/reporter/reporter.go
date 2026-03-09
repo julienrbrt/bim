@@ -124,9 +124,9 @@ func (r *Reporter) GeneratePoC(ctx context.Context, finding analyzer.Finding, ch
 }
 
 // WriteReport writes a formatted Markdown report to disk.
-// Reports are written to: {dataDir}/{chainID}/{address}/reports/{reportID}.md
+// Reports are written to: {dataDir}/{YYYY-MM-DD}/{chainID}/{address}/{reportID}.md
 func (r *Reporter) WriteReport(report *Report) (string, error) {
-	dir := filepath.Join(r.dataDir, fmt.Sprintf("%d", report.ChainID), report.Address, "reports")
+	dir := filepath.Join(r.dataDir, report.CreatedAt.UTC().Format("2006-01-02"), fmt.Sprintf("%d", report.ChainID), report.Address)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("creating report directory %s: %w", dir, err)
 	}

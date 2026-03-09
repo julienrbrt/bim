@@ -26,6 +26,9 @@ const (
 	// maxBisectSteps caps the binary-search loop so it always terminates in
 	// O(log n) steps regardless of chain height.
 	maxBisectSteps = 64
+
+	// noDeployBlock is the sentinel value meaning the deployment block is unknown.
+	noDeployBlock = uint64(0)
 )
 
 // ActivityChecker queries an Ethereum JSON-RPC endpoint to determine whether a
@@ -49,9 +52,8 @@ type ActivityResult struct {
 	Active bool
 	// Reason is a short human-readable explanation of the decision.
 	Reason string
-	// VerifiedAt is the Sourcify verification timestamp passed to IsActive.
-	// A zero value means it was not supplied.
-	VerifiedAt time.Time
+	// DeployBlock is the on-chain deployment block number, if known.
+	DeployBlock uint64
 	// LatestBlock is the block number sampled during the check.
 	LatestBlock uint64
 	// LogsFound is the number of logs emitted by the contract within the window.
@@ -71,36 +73,25 @@ func NewActivityChecker(rpcURL string, httpClient *http.Client, logger *slog.Log
 }
 
 // IsActive reports whether the contract at address was active within the last
-// minDays days — or was verified on Sourcify more recently than minDays ago.
+// minDays days, using its on-chain deployment block and recent event logs.
 //
-// verifiedAt may be zero if the Sourcify verification timestamp is unavailable;
-// in that case only the RPC activity check is performed.
+// deployBlock should be the block number at which the contract was deployed
+// (from Sourcify's Deployment.BlockNumber). Pass noDeployBlock (0) when
+// unknown; in that case only the eth_getLogs check is performed.
 //
 // A contract is considered active when any of the following hold:
-//   - It was verified on Sourcify less than minDays ago (freshly deployed).
+//   - Its deployment block is at or above the cached fromBlock for the window
+//     (i.e. it was deployed within the last minDays days).
 //   - It emitted at least one log within the last minDays of blocks.
-func (c *ActivityChecker) IsActive(ctx context.Context, address string, verifiedAt time.Time, minDays int) (*ActivityResult, error) {
+func (c *ActivityChecker) IsActive(ctx context.Context, address string, deployBlock uint64, minDays int) (*ActivityResult, error) {
 	if minDays <= 0 {
 		minDays = defaultMinAgeDays
 	}
 
-	result := &ActivityResult{VerifiedAt: verifiedAt}
-
-	// Fast path: contract was verified (deployed) recently enough — skip RPC.
-	cutoff := time.Now().UTC().AddDate(0, 0, -minDays)
-	if !verifiedAt.IsZero() && verifiedAt.After(cutoff) {
-		result.Active = true
-		result.Reason = fmt.Sprintf("contract verified on Sourcify %s ago (within %d-day window)",
-			time.Since(verifiedAt).Round(time.Hour), minDays)
-		c.logger.Debug("contract is active (recent verification)",
-			"address", address,
-			"verified_at", verifiedAt,
-			"cutoff", cutoff,
-		)
-		return result, nil
-	}
+	result := &ActivityResult{DeployBlock: deployBlock}
 
 	// Fetch the latest block to anchor the look-back window.
+	cutoff := time.Now().UTC().AddDate(0, 0, -minDays)
 	latestBlock, latestTimestamp, err := c.getBlockByTag(ctx, "latest")
 	if err != nil {
 		return nil, fmt.Errorf("rpc eth_getBlockByNumber(latest): %w", err)
@@ -122,8 +113,7 @@ func (c *ActivityChecker) IsActive(ctx context.Context, address string, verified
 	// calls are made at most once per day, not once per contract.
 	fromBlock, err := c.fromBlockCached(ctx, cutoffUnix, 0, latestBlock, minDays)
 	if err != nil {
-		// Non-fatal: fall back to scanning from block 0 (safe but slower for
-		// the RPC node; most nodes handle it fine for a single address filter).
+		// Non-fatal: fall back to fromBlock=0.
 		c.logger.Warn("block bisection failed, falling back to fromBlock=0",
 			"address", address,
 			"error", err,
@@ -131,6 +121,19 @@ func (c *ActivityChecker) IsActive(ctx context.Context, address string, verified
 		fromBlock = 0
 	}
 
+	// Fast path: contract was deployed within the look-back window — no need
+	// to query logs. deployBlock==0 is the "unknown" sentinel so we skip it.
+	if deployBlock != noDeployBlock && deployBlock >= fromBlock {
+		result.Active = true
+		result.Reason = fmt.Sprintf("contract deployed at block %d, within the %d-day window (from block %d)",
+			deployBlock, minDays, fromBlock)
+		c.logger.Debug("contract is active (recently deployed)",
+			"address", address,
+			"deploy_block", deployBlock,
+			"from_block", fromBlock,
+		)
+		return result, nil
+	}
 	c.logger.Debug("checking contract activity via eth_getLogs",
 		"address", address,
 		"from_block", fromBlock,
@@ -166,18 +169,18 @@ func (c *ActivityChecker) IsActive(ctx context.Context, address string, verified
 	}
 
 	result.Active = false
-	if verifiedAt.IsZero() {
-		result.Reason = fmt.Sprintf("no logs emitted in the last %d days and verification date unknown", minDays)
+	if deployBlock == noDeployBlock {
+		result.Reason = fmt.Sprintf("no logs emitted in the last %d days and deployment block unknown", minDays)
 	} else {
-		result.Reason = fmt.Sprintf("no logs emitted in the last %d days; last verified %s ago",
-			minDays, time.Since(verifiedAt).Round(24*time.Hour))
+		result.Reason = fmt.Sprintf("no logs emitted in the last %d days; deployed at block %d (before the %d-day window starting at block %d)",
+			minDays, deployBlock, minDays, fromBlock)
 	}
 
 	c.logger.Debug("contract is inactive",
 		"address", address,
 		"logs", logCount,
+		"deploy_block", deployBlock,
 		"from_block", fromBlock,
-		"verified_at", verifiedAt,
 	)
 
 	return result, nil
@@ -370,6 +373,13 @@ func (c *ActivityChecker) getLogCount(ctx context.Context, address string, fromB
 
 // hexToUint64 converts a 0x-prefixed hex string to uint64.
 func hexToUint64(s string) (uint64, error) {
+	return ParseUint64Hex(s)
+}
+
+// ParseUint64Hex converts a 0x-prefixed hex string to uint64.
+// It is exported so callers that parse Sourcify/RPC block numbers can reuse it
+// without importing a separate strconv dependency.
+func ParseUint64Hex(s string) (uint64, error) {
 	s = strings.TrimPrefix(s, "0x")
 	s = strings.TrimPrefix(s, "0X")
 	if s == "" {

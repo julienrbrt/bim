@@ -337,7 +337,8 @@ func (t *AnalyzerTool) buildSummary(result *AnalyzeResult, analysis *analyzer.An
 }
 
 // checkActivity uses the RPC activity checker for the given chain to determine
-// whether the contract should be analyzed.
+// whether the contract should be analyzed. It returns (true, reason) when the
+// contract should be skipped, and (false, "") when it should proceed.
 func (t *AnalyzerTool) checkActivity(ctx context.Context, chainID uint64, address string, contract *sourcify.ContractResponse) (skip bool, reason string) {
 	checker, ok := t.activityCheckers[chainID]
 	if !ok {
@@ -349,21 +350,25 @@ func (t *AnalyzerTool) checkActivity(ctx context.Context, chainID uint64, addres
 		return false, ""
 	}
 
-	var verifiedAt time.Time
-	if contract.VerifiedAt != "" {
-		if parsed, err := time.Parse(time.RFC3339, contract.VerifiedAt); err == nil {
-			verifiedAt = parsed
+	// Use the on-chain deployment block number from Sourcify's deployment
+	// metadata as the "recently deployed" signal. This is the actual block the
+	// contract was created in, which is what matters for the activity window —
+	// not verifiedAt, which is just when someone submitted sources to Sourcify.
+	var deployBlock uint64
+	if contract.Deployment != nil && contract.Deployment.BlockNumber != "" {
+		if parsed, err := rpc.ParseUint64Hex(contract.Deployment.BlockNumber); err == nil {
+			deployBlock = parsed
 		} else {
-			t.logger.Debug("could not parse contract verifiedAt timestamp",
+			t.logger.Debug("could not parse contract deployment block number",
 				"chain_id", chainID,
 				"address", address,
-				"verified_at", contract.VerifiedAt,
+				"block_number", contract.Deployment.BlockNumber,
 				"error", err,
 			)
 		}
 	}
 
-	activityResult, err := checker.IsActive(ctx, address, verifiedAt, t.cfg.MinContractAgeDays)
+	activityResult, err := checker.IsActive(ctx, address, deployBlock, t.cfg.MinContractAgeDays)
 	if err != nil {
 		// Non-fatal: if the RPC call fails we conservatively proceed with analysis.
 		t.logger.Warn("activity check failed, proceeding with analysis",
