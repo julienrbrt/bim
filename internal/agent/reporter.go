@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/julienrbrt/bim/internal/config"
-	"github.com/julienrbrt/bim/internal/reporter"
-	"github.com/julienrbrt/bim/internal/sourcify"
-	"github.com/julienrbrt/bim/internal/store"
+	"github.com/julienrbrt/exploithunter/internal/config"
+	"github.com/julienrbrt/exploithunter/internal/reporter"
+	"github.com/julienrbrt/exploithunter/internal/sourcify"
+	"github.com/julienrbrt/exploithunter/internal/store"
 )
 
 // ReporterTool generates exploit summaries, proof-of-concept code, and formatted

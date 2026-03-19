@@ -17,7 +17,7 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
 
-	"github.com/julienrbrt/bim/internal/store"
+	"github.com/julienrbrt/exploithunter/internal/store"
 )
 
 // progRef is a shared holder for the *tea.Program reference so that
@@ -111,7 +111,7 @@ type Config struct {
 	Store     store.Store
 }
 
-// Model is the top-level Bubbletea model for BiM.
+// Model is the top-level Bubbletea model for Exploit Hunter.
 type Model struct {
 	cfg Config
 
@@ -151,7 +151,7 @@ type Model struct {
 func New(cfg Config) Model {
 	ti := textinput.New()
 	ti.Prompt = "> "
-	ti.Placeholder = "Ask BiM something…"
+	ti.Placeholder = "Ask exploithunter something…"
 	ti.Focus()
 	ti.CharLimit = 4096
 
@@ -162,7 +162,7 @@ func New(cfg Config) Model {
 		logsVP:           viewport.New(),
 		findingsVP:       viewport.New(),
 		input:            ti,
-		chatLines:        []string{"Welcome to BiM. Type a message and press Enter."},
+		chatLines:        []string{"Welcome to exploithunter. Type a message and press Enter."},
 		logLines:         []string{},
 		pref:             newProgRef(),
 		chatAtBottom:     true,
@@ -397,7 +397,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatLines = append(m.chatLines, "Error: "+msg.err.Error())
 			}
 		} else if m.agentPartial != "" {
-			m.chatLines = append(m.chatLines, "BiM: "+m.agentPartial)
+			m.chatLines = append(m.chatLines, "exploithunter: "+m.agentPartial)
 		}
 		m.agentPartial = ""
 		m.syncChatViewport()
@@ -487,7 +487,7 @@ func (m *Model) syncChatViewport() {
 	copy(lines, m.chatLines)
 
 	if m.agentPartial != "" {
-		lines = append(lines, "BiM: "+m.agentPartial+"▍")
+		lines = append(lines, "Exploit Hunter: "+m.agentPartial+"▍")
 	} else if m.agentBusy && m.agentStatus != "" {
 		lines = append(lines, "  ⏳ "+m.agentStatus)
 	}
@@ -784,9 +784,9 @@ func styleChatLine(line string) string {
 	case strings.HasPrefix(line, "You: "):
 		prefix := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(6)).Render("You:")
 		return prefix + " " + line[5:]
-	case strings.HasPrefix(line, "BiM: "):
-		prefix := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(2)).Render("BiM:")
-		return prefix + " " + line[5:]
+	case strings.HasPrefix(line, "exploithunter: "):
+		prefix := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(2)).Render("exploithunter:")
+		return prefix + " " + line[15:]
 	case strings.HasPrefix(line, "Error: "):
 		return lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(1)).Render(line)
 	case strings.HasPrefix(line, "  ⚙ "):

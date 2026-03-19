@@ -1,4 +1,4 @@
-module github.com/julienrbrt/bim
+module github.com/julienrbrt/exploithunter
 
 go 1.26.0
 

@@ -12,8 +12,8 @@ func TestLoad_ValidConfig(t *testing.T) {
 google_api_key: test-key-123
 model_name: gemini-2.0-flash
 log_level: debug
-data_dir: /tmp/bim-test
-db_path: /tmp/bim-test/bim.db
+data_dir: /tmp/exploithunter-test
+db_path: /tmp/exploithunter-test/exploithunter.db
 sourcify_base_url: https://sourcify.example.com
 poll_interval: 30s
 chains:
@@ -40,11 +40,11 @@ chains:
 	if cfg.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "debug")
 	}
-	if cfg.DataDir != "/tmp/bim-test" {
-		t.Errorf("DataDir = %q, want %q", cfg.DataDir, "/tmp/bim-test")
+	if cfg.DataDir != "/tmp/exploithunter-test" {
+		t.Errorf("DataDir = %q, want %q", cfg.DataDir, "/tmp/exploithunter-test")
 	}
-	if cfg.DBPath != "/tmp/bim-test/bim.db" {
-		t.Errorf("DBPath = %q, want %q", cfg.DBPath, "/tmp/bim-test/bim.db")
+	if cfg.DBPath != "/tmp/exploithunter-test/exploithunter.db" {
+		t.Errorf("DBPath = %q, want %q", cfg.DBPath, "/tmp/exploithunter-test/exploithunter.db")
 	}
 	if cfg.SourcifyBaseURL != "https://sourcify.example.com" {
 		t.Errorf("SourcifyBaseURL = %q, want %q", cfg.SourcifyBaseURL, "https://sourcify.example.com")
@@ -87,8 +87,8 @@ google_api_key: my-key
 	if cfg.DataDir != "./data" {
 		t.Errorf("DataDir = %q, want default %q", cfg.DataDir, "./data")
 	}
-	if cfg.DBPath != "./data/bim.db" {
-		t.Errorf("DBPath = %q, want default %q", cfg.DBPath, "./data/bim.db")
+	if cfg.DBPath != "./data/exploithunter.db" {
+		t.Errorf("DBPath = %q, want default %q", cfg.DBPath, "./data/exploithunter.db")
 	}
 	if cfg.SourcifyBaseURL != "https://sourcify.dev/server" {
 		t.Errorf("SourcifyBaseURL = %q, want default", cfg.SourcifyBaseURL)

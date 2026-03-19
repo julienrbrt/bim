@@ -1,4 +1,4 @@
-# BiM - Bug-in-the-Machine
+# EVM Exploit Hunter
 
 > [!WARNING]
 > ~80% AI-generated. Always verify findings manually before acting on them.
@@ -27,9 +27,9 @@ The whole pipeline runs autonomously in the background, or you can drive it manu
 **Prerequisites:** Go 1.26+, [Google Gemini API key](https://aistudio.google.com/app/apikey)
 
 ```sh
-go install github.com/julienrbrt/bim@main
+go install github.com/julienrbrt/exploithunter@main
 cp config.example.yaml config.yaml   # then fill in google_api_key
-bim -c config.yaml
+exploithunter -c config.yaml
 ```
 
 ## Configuration

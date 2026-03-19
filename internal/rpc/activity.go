@@ -1,4 +1,4 @@
-// Package rpc provides lightweight Ethereum JSON-RPC helpers for BiM.
+// Package rpc provides lightweight Ethereum JSON-RPC helpers for Exploit Hunter.
 package rpc
 
 import (

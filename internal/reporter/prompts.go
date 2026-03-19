@@ -7,7 +7,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/julienrbrt/bim/internal/analyzer"
+	"github.com/julienrbrt/exploithunter/internal/analyzer"
 )
 
 //go:embed templates/*.tmpl

@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/julienrbrt/bim/internal/analyzer"
+	"github.com/julienrbrt/exploithunter/internal/analyzer"
 )
 
 // LLM is the interface used by the reporter to interact with a language model.

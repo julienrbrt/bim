@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/julienrbrt/bim/internal/analyzer"
-	"github.com/julienrbrt/bim/internal/config"
-	"github.com/julienrbrt/bim/internal/rpc"
-	"github.com/julienrbrt/bim/internal/sourcify"
-	"github.com/julienrbrt/bim/internal/store"
+	"github.com/julienrbrt/exploithunter/internal/analyzer"
+	"github.com/julienrbrt/exploithunter/internal/config"
+	"github.com/julienrbrt/exploithunter/internal/rpc"
+	"github.com/julienrbrt/exploithunter/internal/sourcify"
+	"github.com/julienrbrt/exploithunter/internal/store"
 )
 
 // addressPattern matches Ethereum addresses (0x + 40 hex chars) in source code.

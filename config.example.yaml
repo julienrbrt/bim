@@ -1,7 +1,7 @@
-# BiM configuration file.
+# Exploit Hunter configuration file.
 #
 # All settings have sensible defaults except google_api_key, which is required.
-# Environment variable BIM_CONFIG can point to this file (default: config.yaml).
+# Environment variable EXPLOITHUNTER_CONFIG can point to this file (default: config.yaml).
 
 # Google Gemini API key (required).
 google_api_key: ""
@@ -16,7 +16,7 @@ log_level: info
 data_dir: ./data
 
 # Path to the SQLite database file.
-db_path: ./data/bim.db
+db_path: ./data/exploithunter.db
 
 # Sourcify API base URL.
 sourcify_base_url: https://sourcify.dev/server

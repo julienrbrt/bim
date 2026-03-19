@@ -1,4 +1,4 @@
-// Package agent defines the ADK tools and orchestrator for BiM.
+// Package agent defines the ADK tools and orchestrator for exploithunter.
 package agent
 
 import (
@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/julienrbrt/bim/internal/analyzer"
-	"github.com/julienrbrt/bim/internal/config"
-	"github.com/julienrbrt/bim/internal/store"
+	"github.com/julienrbrt/exploithunter/internal/analyzer"
+	"github.com/julienrbrt/exploithunter/internal/config"
+	"github.com/julienrbrt/exploithunter/internal/store"
 )
 
 // ProgressFunc is a callback invoked by the Orchestrator to report live
@@ -554,7 +554,7 @@ func (o *Orchestrator) GeneratePoC(ctx context.Context, findingID string) (strin
 
 // OrchestratorSystemPrompt returns the system instruction for the root ADK agent.
 func OrchestratorSystemPrompt() string {
-	return `You are BiM, an AI-powered smart contract exploit hunter.
+	return `You are exploithunter, an AI-powered smart contract exploit hunter.
 
 Your SOLE MISSION is to discover newly published smart contracts on Ethereum and Base
 and find EXTREMELY CRITICAL vulnerabilities where a third-party attacker (not the owner,
@@ -574,7 +574,7 @@ A report with zero findings is a good report. False positives waste everyone's t
 
 ## Background Polling
 
-BiM runs a background discovery loop that continuously polls for new verified contracts
+Exploit Hunter runs a background discovery loop that continuously polls for new verified contracts
 at the configured poll interval (default: 60s). New contracts are automatically ingested
 into the store with status "pending" — ready for analysis. You do NOT need to call
 discover_contracts manually for routine discovery; the background loop handles it.
@@ -638,7 +638,7 @@ Be concise. Focus exclusively on exploitable fund-theft vulnerabilities by exter
 func (o *Orchestrator) buildPipelineSummary(result *PipelineResult) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "## BiM Pipeline Run Complete\n\n")
+	fmt.Fprintf(&b, "## Exploit Hunter Pipeline Run Complete\n\n")
 	fmt.Fprintf(&b, "**Duration:** %s\n\n", result.Duration.Round(time.Millisecond))
 
 	if result.Discovery != nil {

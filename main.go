@@ -18,17 +18,17 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	agentpkg "github.com/julienrbrt/bim/internal/agent"
-	"github.com/julienrbrt/bim/internal/analyzer"
-	"github.com/julienrbrt/bim/internal/config"
-	"github.com/julienrbrt/bim/internal/reporter"
-	"github.com/julienrbrt/bim/internal/sourcify"
-	"github.com/julienrbrt/bim/internal/store"
-	"github.com/julienrbrt/bim/internal/tui"
+	agentpkg "github.com/julienrbrt/exploithunter/internal/agent"
+	"github.com/julienrbrt/exploithunter/internal/analyzer"
+	"github.com/julienrbrt/exploithunter/internal/config"
+	"github.com/julienrbrt/exploithunter/internal/reporter"
+	"github.com/julienrbrt/exploithunter/internal/sourcify"
+	"github.com/julienrbrt/exploithunter/internal/store"
+	"github.com/julienrbrt/exploithunter/internal/tui"
 )
 
 const (
-	appName = "bim"
+	appName = "exploithunter"
 	userID  = "user"
 )
 
@@ -127,10 +127,10 @@ func main() {
 	discoveryTool.StartBackgroundPolling(ctx)
 	defer discoveryTool.Stop()
 
-	bimAgent, err := llmagent.New(llmagent.Config{
+	exploitHunterAgent, err := llmagent.New(llmagent.Config{
 		Name:        appName,
 		Model:       adkModel,
-		Description: "BiM — AI-powered smart contract security agent for Ethereum and Base. Discovers new contracts, finds vulnerabilities, and generates bug bounty reports with PoC exploits.",
+		Description: "exploithunter — AI-powered smart contract security agent for Ethereum and Base. Discovers new contracts, finds vulnerabilities, and generates bug bounty reports with PoC exploits.",
 		Instruction: agentpkg.OrchestratorSystemPrompt(),
 		Tools:       tools,
 	})
@@ -151,7 +151,7 @@ func main() {
 
 	r, err := runner.New(runner.Config{
 		AppName:        appName,
-		Agent:          bimAgent,
+		Agent:          exploitHunterAgent,
 		SessionService: sessionSvc,
 	})
 	if err != nil {
@@ -170,7 +170,7 @@ func main() {
 	ref.Set(p)
 
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "BiM exited with error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "exploithunter exited with error: %v\n", err)
 		os.Exit(1)
 	}
 }

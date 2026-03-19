@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 
-	"github.com/julienrbrt/bim/internal/analyzer"
+	"github.com/julienrbrt/exploithunter/internal/analyzer"
 )
 
 // SQLiteStore implements the Store interface using GORM with SQLite.

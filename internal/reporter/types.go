@@ -3,7 +3,7 @@ package reporter
 import (
 	"time"
 
-	"github.com/julienrbrt/bim/internal/analyzer"
+	"github.com/julienrbrt/exploithunter/internal/analyzer"
 )
 
 // Report contains a complete exploit report for a single finding,

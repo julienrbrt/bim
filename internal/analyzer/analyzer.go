@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/julienrbrt/bim/internal/config"
+	"github.com/julienrbrt/exploithunter/internal/config"
 )
 
 // LLM is the interface for interacting with a language model.

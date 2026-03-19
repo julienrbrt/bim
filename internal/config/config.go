@@ -1,4 +1,4 @@
-// Package config provides YAML-based configuration for BiM.
+// Package config provides YAML-based configuration for exploithunter.
 package config
 
 import (
@@ -20,7 +20,7 @@ type Chain struct {
 	RPCURL string `yaml:"rpc_url"`
 }
 
-// Config is the top-level configuration for BiM.
+// Config is the top-level configuration for exploithunter.
 type Config struct {
 	// GoogleAPIKey is the API key for Google Gemini.
 	GoogleAPIKey string `yaml:"google_api_key"`
@@ -54,7 +54,7 @@ type Config struct {
 	// skipped without being sent to the LLM.
 	SkippedContracts []string `yaml:"skipped_contracts"`
 
-	// Chains lists the blockchain networks BiM monitors.
+	// Chains lists the blockchain networks exploithunter monitors.
 	Chains []Chain `yaml:"chains"`
 }
 
@@ -64,7 +64,7 @@ func defaults() Config {
 		ModelName:           "gemini-2.5-pro",
 		LogLevel:            "info",
 		DataDir:             "./data",
-		DBPath:              "./data/bim.db",
+		DBPath:              "./data/exploithunter.db",
 		SourcifyBaseURL:     "https://sourcify.dev/server",
 		PollInterval:        60 * time.Second,
 		MaxSinglePassTokens: 200_000,

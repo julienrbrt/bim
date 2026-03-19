@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/julienrbrt/bim/internal/analyzer"
+	"github.com/julienrbrt/exploithunter/internal/analyzer"
 )
 
 func newTestStore(t *testing.T) *SQLiteStore {
@@ -30,7 +30,7 @@ func TestNewSQLiteStore(t *testing.T) {
 }
 
 func TestNewSQLiteStore_InvalidPath(t *testing.T) {
-	_, err := NewSQLiteStore("/nonexistent/directory/that/does/not/exist/bim.db", slog.Default())
+	_, err := NewSQLiteStore("/nonexistent/directory/that/does/not/exist/eh.db", slog.Default())
 	if err == nil {
 		t.Fatal("expected error for invalid path, got nil")
 	}

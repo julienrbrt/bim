@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/julienrbrt/bim/internal/analyzer"
+	"github.com/julienrbrt/exploithunter/internal/analyzer"
 )
 
 // ContractStatus represents the processing state of a tracked contract.
@@ -185,7 +185,7 @@ type ContractFilter struct {
 	Offset int
 }
 
-// Store is the persistence interface for BiM's contract tracking, analysis results, and reports.
+// Store is the persistence interface for Exploit Hunter's contract tracking, analysis results, and reports.
 type Store interface {
 	SaveContract(ctx context.Context, c *Contract) error
 	GetContract(ctx context.Context, chainID uint64, address string) (*Contract, error)

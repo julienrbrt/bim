@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/julienrbrt/bim/internal/config"
-	"github.com/julienrbrt/bim/internal/sourcify"
-	"github.com/julienrbrt/bim/internal/store"
+	"github.com/julienrbrt/exploithunter/internal/config"
+	"github.com/julienrbrt/exploithunter/internal/sourcify"
+	"github.com/julienrbrt/exploithunter/internal/store"
 )
 
 // ContractSource returns recently created contract addresses for a given chain.
